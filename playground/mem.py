@@ -1,8 +1,34 @@
+import weakref
+from typing import Any, Iterable, Optional, Union
+
 import torch
 import torch.nn as nn
-from typing import Optional, Union, Any, Iterable
 
-device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+class WeakTensorList:
+    def __init__(self):
+        self._refs = []
+
+    def append(self, tensor):
+        # Add a weak reference to the tensor
+        self._refs.append(weakref.ref(tensor))
+
+    def __getitem__(self, index):
+        # Retrieve the tensor, if it's still alive
+        tensor_ref = self._refs[index]()
+        if tensor_ref is None:
+            print(f"Tensor at index {index} has been garbage collected.")
+        return tensor_ref
+
+    def __len__(self):
+        return len(self._refs)
+
+    def cleanup(self):
+        # Clean up any None references from the list
+        self._refs = [ref for ref in self._refs if ref() is not None]
+
 
 class MLP(nn.Module):
     """
@@ -27,15 +53,21 @@ class MLP(nn.Module):
         self.lin_1 = nn.Linear(4 * self.d_model, self.d_model, **factory_kwargs)
         self.dropout = nn.Dropout(self.dropout_prob) if self.dropout_prob else None
 
+        self.layer1 = nn.Sequential(self.lin_0, self.act_fn)
+        self.layer2 = nn.Sequential(self.lin_1, self.act_fn)
+        self.layer3 = nn.Sequential(self.lin_0, self.act_fn)
+        self.layer4 = nn.Sequential(self.lin_1)
+
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
-        x = self.lin_0(inputs)
-        x = self.act_fn(x)
-        x = self.lin_1(x)
+        x = self.layer1(inputs)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
         if self.dropout is not None:
             x = self.dropout(x)
         return x
-    
-    
+
+
 class AllocatedMemContext:
     def __init__(self) -> None:
         # Ensure CUDA libraries are loaded:
@@ -61,7 +93,9 @@ class AllocatedMemContext:
     def __exit__(self, *args: Any, **kwargs: Any) -> None:
         self.after = self._get_mem_dict()
         self.delta = {k: v - self.before[k] for k, v in self.after.items()}
-        
+
+
+class C: pass
 
 class SavedTensorContext:
     def __init__(
@@ -75,11 +109,15 @@ class SavedTensorContext:
         )
 
         self.saved_tensor_dict = torch.utils.weak.WeakTensorKeyDictionary()
+        self.saved_tensor_list = WeakTensorList()
+        self.layer_pos = [0,]
+
 
         def pack_hook(saved_tensor: torch.Tensor) -> torch.Tensor:
             data_ptr = saved_tensor.untyped_storage().data_ptr()
             if data_ptr not in self._ignored_data_ptrs:
                 self.saved_tensor_dict[saved_tensor] = data_ptr
+                self.saved_tensor_list.append(saved_tensor)
             return saved_tensor
 
         def unpack_hook(saved_tensor: torch.Tensor) -> torch.Tensor:
@@ -88,6 +126,9 @@ class SavedTensorContext:
         self._saved_tensors_hook = torch.autograd.graph.saved_tensors_hooks(
             pack_hook, unpack_hook
         )
+
+    def take_layer_pos(self):
+        self.layer_pos.append(len(self.saved_tensor_list))
 
     def __enter__(self) -> "SavedTensorContext":
         self._saved_tensors_hook.__enter__()
@@ -109,6 +150,26 @@ class SavedTensorContext:
                 total_bytes += t.untyped_storage().nbytes()
                 accounted_for.add(data_ptr)
         return total_bytes
+    
+    @property
+    def saved_tensor_mem_layer(self) -> list:
+        """
+        The memory in bytes of all saved tensors, accounting for views into the same storage.
+        """
+        accounted_for = self._ignored_data_ptrs.copy()
+        total_bytes_list = []
+        for layer_idx in range(len(self.layer_pos[:-1])):
+            initial_idx = self.layer_pos[layer_idx]
+            final_idx = self.layer_pos[layer_idx+1]
+            total_bytes = 0
+            for i in range(initial_idx, final_idx):
+                t = self.saved_tensor_list[i]
+                data_ptr = t.untyped_storage().data_ptr()
+                if data_ptr not in accounted_for:
+                    total_bytes += t.untyped_storage().nbytes()
+                    accounted_for.add(data_ptr)
+            total_bytes_list.append(total_bytes)
+        return total_bytes_list
 
 
 if __name__ == "__main__":
@@ -128,20 +189,53 @@ if __name__ == "__main__":
     outputs = []
     mem_bytes = []
 
-    for name, act_fn in act_fn_dict.items():
-        mlp = MLP(
-            d_model=d_model,
-            act_fn=act_fn,
-            device=device,
-            dtype=dtype,
-        )
-        with AllocatedMemContext() as mem, SavedTensorContext(
-            ignored_tensors=mlp.parameters()
-        ) as saved:
-            out = mlp(inputs)
-            outputs.append(out)
-        assert mem.delta["current"] == saved.saved_tensor_mem
-        print(f"{name} bytes: {saved.saved_tensor_mem}")
-        mem_bytes.append(saved.saved_tensor_mem)
+    # each layer activation function memory comparison
+    mlp_model = MLP(
+        d_model=d_model,
+        act_fn=act_fn_dict["ReLU"],
+        device=device,
+        dtype=dtype,
+    )
+    with AllocatedMemContext() as mem, SavedTensorContext(
+        ignored_tensors=mlp_model.parameters()
+    ) as saved:
+        temp_c = []
+        name_list = ["layer1", "layer2", "layer3", "layer4"]
+        for i, (name, op) in enumerate(mlp_model.named_modules()):
+            if name not in name_list:
+                continue
+            out = op(inputs)
+            if int(name.split("layer")[1]) % 2 == 0:
+                saved.take_layer_pos()
+                print(name, i)
 
-    print(f"ReLU/GeLU act mem ratio: {mem_bytes[0]/mem_bytes[1]}")                    
+            # print(i, name, op, out.shape, inputs.shape)
+
+            inputs = out
+    print(saved.saved_tensor_list._refs)
+    print(len(saved.saved_tensor_list._refs))
+    print(saved.layer_pos) 
+    print(saved.saved_tensor_mem_layer) 
+    print(f"total bytes: {saved.saved_tensor_mem}")
+    print(sum(saved.saved_tensor_mem_layer))
+
+    # activation function memory comparison
+
+    # for name, act_fn in act_fn_dict.items():
+    #     mlp = MLP(
+    #         d_model=d_model,
+    #         act_fn=act_fn,
+    #         device=device,
+    #         dtype=dtype,
+    #     )
+    #     with AllocatedMemContext() as mem, SavedTensorContext(
+    #         ignored_tensors=mlp.parameters()
+    #     ) as saved:
+    #         out = mlp(inputs)
+    #         outputs.append(out)
+    #     assert mem.delta["current"] == saved.saved_tensor_mem
+    #     print(f"{name} bytes: {saved.saved_tensor_mem}")
+    #     print(f"meta_data: {saved.meta_data}")
+    #     mem_bytes.append(saved.saved_tensor_mem)
+
+    # print(f"ReLU/GeLU act mem ratio: {mem_bytes[0]/mem_bytes[1]}")
