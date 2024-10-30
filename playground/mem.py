@@ -95,7 +95,6 @@ class AllocatedMemContext:
         self.delta = {k: v - self.before[k] for k, v in self.after.items()}
 
 
-class C: pass
 
 class SavedTensorContext:
     def __init__(

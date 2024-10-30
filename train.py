@@ -26,7 +26,13 @@ from torchtitan.parallelisms import (
     models_pipelining_fns,
     ParallelDims,
 )
-from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
+from torchtitan.profiling import (
+    maybe_enable_memory_snapshot,
+    maybe_enable_profiling,
+    register_timing_hooks,
+    SavedTensorContext,
+)
+from torch.profiler import record_function
 
 
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
@@ -244,11 +250,18 @@ def main(job_config: JobConfig):
         f"total steps {job_config.training.steps} "
         f"(warmup {job_config.training.warmup_steps})"
     )
+
+    timings = {}
+    memory_usage = {}
+
+
+
     with maybe_enable_profiling(
         job_config, global_step=train_state.step
     ) as torch_profiler, maybe_enable_memory_snapshot(
         job_config, global_step=train_state.step
     ) as memory_profiler:
+
         while train_state.step < job_config.training.steps:
             train_state.step += 1
             gc_handler.run(train_state.step)
@@ -297,12 +310,17 @@ def main(job_config: JobConfig):
                 )
             else:
                 # Non-PP forward / backward
-                with train_context(optional_context_parallel_ctx):
+                with train_context(optional_context_parallel_ctx), SavedTensorContext(
+                    # ignored_tensors=model.parameters()
+                ) as saved_tensors:
+                    register_timing_hooks(model, timings, memory_usage, saved_tensors.take_layer_pos())
+                    # with record_function("## forward ##"):
                     pred = model(input_ids)
                     loss = loss_fn(pred, labels)
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory
                     del pred
+                    # with record_function("## backward ##"):
                     loss.backward()
 
             # clip gradients
@@ -316,7 +334,10 @@ def main(job_config: JobConfig):
 
             # optimizer step
             checkpoint.maybe_wait_for_staging()
+            # timings['optimizer_step_start'] = time.time()
+            # with record_function("## optimizer ##"):
             optimizers.step()
+            # timings['optimizer_step_end'] = time.time()
             lr_schedulers.step()
 
             # calculate float8 dynamic amax/scale for all-parameter for FSDP2
@@ -411,6 +432,13 @@ def main(job_config: JobConfig):
                     timeout=timedelta(seconds=job_config.comm.train_timeout_seconds),
                     world_mesh=world_mesh,
                 )
+                
+            
+            # print("saved_tensors:", saved_tensors.saved_tensor_mem_layer)
+
+        # if torch_profiler:
+        #     logger.info("Exporting memory profiler results")
+        #     torch_profiler.export_memory_timeline(f"memory_timeline.html", device=device)
 
     if torch.distributed.get_rank() == 0:
         logger.info("Sleeping 2 seconds for other ranks to complete")
@@ -418,6 +446,8 @@ def main(job_config: JobConfig):
 
     metric_logger.close()
     logger.info("Training completed")
+    logger.info(f"Timing information: {timings}")
+    logger.info(f"Memory information: {memory_usage}")
 
 
 if __name__ == "__main__":
