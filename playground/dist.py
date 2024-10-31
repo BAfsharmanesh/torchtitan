@@ -40,6 +40,7 @@ def init_process(rank, size, fn, backend="nccl"):
     os.environ["MASTER_ADDR"] = "127.0.0.1"
     os.environ["MASTER_PORT"] = "29500"
     dist.init_process_group(backend, rank=rank, world_size=size)
+    device_mesh = DeviceMesh("cuda", torch.arange(world_size).reshape(2, 2))
     fn(rank, size)
     dist.destroy_process_group()
 

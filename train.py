@@ -311,19 +311,18 @@ def main(job_config: JobConfig):
             else:
                 # Non-PP forward / backward
                 with train_context(optional_context_parallel_ctx), SavedTensorContext(
-                    # ignored_tensors=model.parameters()
+                    ignored_tensors=model.parameters()
                 ) as saved_tensors:
-                    # register_timing_hooks(model, timings, memory_usage, saved_tensors.take_layer_pos)
+                    register_timing_hooks(model, timings, memory_usage, saved_tensors.take_layer_pos)
                     # with record_function("## forward ##"):
-                    print("input memory size:", input_ids.untyped_storage().nbytes()/1024/1024)
                     pred = model(input_ids)
                     loss = loss_fn(pred, labels)
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory
-                    # print("saved_tensors:", saved_tensors.saved_tensor_mem_layer)
-                    print("total_saved_tensors:", saved_tensors.saved_tensor_mem)  
+                    print("saved_tensors:", saved_tensors.saved_tensor_mem_layer, sum(saved_tensors.saved_tensor_mem_layer))
                     del pred
                     
+                    print("total_saved_tensors:", saved_tensors.saved_tensor_mem)  
 
                     # with record_function("## backward ##"):
                     loss.backward()
@@ -475,8 +474,8 @@ def main(job_config: JobConfig):
 
     metric_logger.close()
     logger.info("Training completed")
-    logger.info(f"Timing information: {timings}")
-    logger.info(f"Memory information: {memory_usage}")
+    # logger.info(f"Timing information: {timings}")
+    # logger.info(f"Memory information: {memory_usage}")
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ import pickle
 import time
 
 import torch
+
 from torchtitan.config_manager import JobConfig
 from torchtitan.logging import logger
 
@@ -65,7 +66,7 @@ def maybe_enable_profiling(config: JobConfig, *, global_step: int = 0):
             on_trace_ready=trace_handler,
             record_shapes=True,
             profile_memory=True,
-            with_stack=True            
+            with_stack=True,
         ) as torch_profiler:
             torch_profiler.step_num = global_step
             yield torch_profiler
@@ -112,7 +113,7 @@ def maybe_enable_memory_snapshot(config: JobConfig, *, global_step: int = 0):
                 with open(
                     f"{curr_snapshot_dir}/rank{rank}_memory_snapshot.pickle", "wb"
                 ) as output:
-                    pickle.dump(torch.cuda.memory.memory_snapshot(), output)
+                    pickle.dump(torch.cuda.memory._snapshot(), output)
                 logger.info(
                     f"Finished dumping memory snapshot in {time.monotonic() - begin:.2f} seconds"
                 )
@@ -127,9 +128,12 @@ def maybe_enable_memory_snapshot(config: JobConfig, *, global_step: int = 0):
         yield None
 
 
-import torch
 import time
-# 
+
+import torch
+
+#
+
 
 def register_timing_hooks(model, timings, memory_usage, func=None):
 
@@ -147,28 +151,32 @@ def register_timing_hooks(model, timings, memory_usage, func=None):
         def hook(module, input, output):
             torch.cuda.synchronize()  # Ensure all CUDA operations are finished
             timings[f"{layer_name}_{pass_type}_end"] = time.time()
-            memory_usage[f"{layer_name}_{pass_type}_start_reserved"] = torch.cuda.max_memory_reserved()
-            memory_usage[f"{layer_name}_{pass_type}_start_allocated"] = torch.cuda.max_memory_allocated()    
+            memory_usage[f"{layer_name}_{pass_type}_start_reserved"] = (
+                torch.cuda.max_memory_reserved()
+            )
+            memory_usage[f"{layer_name}_{pass_type}_start_allocated"] = (
+                torch.cuda.max_memory_allocated()
+            )
             if func is not None:
-                func()    
+                func()
+
         return hook
-
-
 
     # Iterate over each layer and register hooks
     for name, layer in model.named_modules():
         # Only apply hooks to container-like layers, not leaf layers
-        hook_layers = [f'layers.{i}' for i in range(8)]
-        hook_layers = hook_layers + ['norm', 'output']
-        if name in hook_layers:    
-            print("Registering hooks for layer", name)    
-            layer.register_forward_pre_hook(start_time(name, 'forward'))
-            layer.register_forward_hook(end_time(name, 'forward', func))
-            layer.register_full_backward_pre_hook(start_time(name, 'backward'))
-            layer.register_full_backward_hook(end_time(name, 'backward'))
-        elif name in ['tok_embeddings']:
-            layer.register_forward_pre_hook(start_time(name, 'forward'))
-            layer.register_forward_hook(end_time(name, 'forward'))
+        hook_layers = [f"layers.{i}" for i in range(8)]
+        hook_layers = hook_layers + ["norm", "output"]
+        if name in hook_layers:
+            print("Registering hooks for layer", name)
+            layer.register_forward_pre_hook(start_time(name, "forward"))
+            layer.register_forward_hook(end_time(name, "forward", func))
+            layer.register_full_backward_pre_hook(start_time(name, "backward"))
+            layer.register_full_backward_hook(end_time(name, "backward"))
+        elif name in ["tok_embeddings"]:
+            layer.register_forward_pre_hook(start_time(name, "forward"))
+            layer.register_forward_hook(end_time(name, "forward"))
+
 
 import weakref
 from typing import Any, Iterable, Optional, Union
@@ -176,6 +184,7 @@ from typing import Any, Iterable, Optional, Union
 from torchtitan.utils import Color
 
 color = Color
+
 
 class SavedTensorContext:
     def __init__(
@@ -185,24 +194,47 @@ class SavedTensorContext:
         self._ignored_data_ptrs = (
             set()
             if ignored_tensors is None
-            else {id(t.untyped_storage()) for t in ignored_tensors if t is not None}
+            else {
+                (
+                    id(t.to_local().untyped_storage())
+                    if isinstance(t, torch.distributed.tensor.DTensor)
+                    else id(t.untyped_storage())
+                )
+                for t in ignored_tensors
+            }
         )
 
         self.saved_tensor_dict = torch.utils.weak.WeakTensorKeyDictionary()
         self.saved_tensor_list = WeakTensorList()
-        self.layer_pos = [0,]
-
+        self.layer_pos = [
+            0,
+        ]
 
         def pack_hook(saved_tensor: torch.Tensor) -> torch.Tensor:
             # str_saved = f"{Color.red}saved_tensor: {saved_tensor.device}, {saved_tensor.shape} {type(saved_tensor)}{Color.reset}"
             # str_local = f"{Color.red}local: {saved_tensor.to_local().device}, {saved_tensor.to_local().shape} {type(saved_tensor.to_local())}{Color.reset}"
             # logger.info(str_saved+str_local)
             # torch.cuda.synchronize()
-            data_ptr = id(saved_tensor.untyped_storage()) if saved_tensor is not None else None
+            # logger.info(f"{color.red}storage: {type(saved_tensor)}{color.reset}")
+            data_ptr = (
+                id(saved_tensor.to_local().untyped_storage())
+                if isinstance(saved_tensor, torch.distributed.tensor.DTensor)
+                else id(saved_tensor.untyped_storage())
+            )
             # logger.info(f"{color.red}storage: {type(data_ptr)}{color.reset}")
             if data_ptr not in self._ignored_data_ptrs:
-                self.saved_tensor_dict[saved_tensor] = data_ptr
-                self.saved_tensor_list.append(saved_tensor)
+                self.saved_tensor_dict[
+                    (
+                        saved_tensor.to_local()
+                        if isinstance(saved_tensor, torch.distributed.tensor.DTensor)
+                        else saved_tensor
+                    )
+                ] = data_ptr
+                self.saved_tensor_list.append(
+                    saved_tensor.to_local()
+                    if isinstance(saved_tensor, torch.distributed.tensor.DTensor)
+                    else saved_tensor
+                )
             return saved_tensor
 
         def unpack_hook(saved_tensor: torch.Tensor) -> torch.Tensor:
@@ -233,10 +265,13 @@ class SavedTensorContext:
         for t in self.saved_tensor_dict:
             data_ptr = id(t.untyped_storage())
             if data_ptr not in accounted_for:
+                # logger.info(f"{color.red}storage: {data_ptr}, size:, {t.untyped_storage().nbytes()/1024/1024} {t.shape}{color.reset}")
+                # if t.untyped_storage().nbytes()/1024/1024 > 128:
+                #     print(t.shape, t.untyped_storage().nbytes()/1024/1024, t.dtype, t.device)
                 total_bytes += t.untyped_storage().nbytes()
                 accounted_for.add(data_ptr)
-        return total_bytes/1024/1024
-    
+        return total_bytes / 1024 / 1024
+
     @property
     def saved_tensor_mem_layer(self) -> list:
         """
@@ -246,7 +281,7 @@ class SavedTensorContext:
         total_bytes_list = []
         for layer_idx in range(len(self.layer_pos[:-1])):
             initial_idx = self.layer_pos[layer_idx]
-            final_idx = self.layer_pos[layer_idx+1]
+            final_idx = self.layer_pos[layer_idx + 1]
             total_bytes = 0
             for i in range(initial_idx, final_idx):
                 t = self.saved_tensor_list[i]
@@ -256,11 +291,10 @@ class SavedTensorContext:
                 if data_ptr not in accounted_for:
                     total_bytes += t.untyped_storage().nbytes()
                     accounted_for.add(data_ptr)
-            total_bytes_list.append(total_bytes/1024/1024)
+            total_bytes_list.append(total_bytes / 1024 / 1024)
         return total_bytes_list
-    
-    
-    
+
+
 class WeakTensorList:
     def __init__(self):
         self._refs = []
@@ -281,4 +315,4 @@ class WeakTensorList:
 
     def cleanup(self):
         # Clean up any None references from the list
-        self._refs = [ref for ref in self._refs if ref() is not None]    
+        self._refs = [ref for ref in self._refs if ref() is not None]
