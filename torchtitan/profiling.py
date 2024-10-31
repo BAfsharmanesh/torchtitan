@@ -112,7 +112,7 @@ def maybe_enable_memory_snapshot(config: JobConfig, *, global_step: int = 0):
                 with open(
                     f"{curr_snapshot_dir}/rank{rank}_memory_snapshot.pickle", "wb"
                 ) as output:
-                    pickle.dump(torch.cuda.memory._snapshot(), output)
+                    pickle.dump(torch.cuda.memory.memory_snapshot(), output)
                 logger.info(
                     f"Finished dumping memory snapshot in {time.monotonic() - begin:.2f} seconds"
                 )
@@ -185,7 +185,7 @@ class SavedTensorContext:
         self._ignored_data_ptrs = (
             set()
             if ignored_tensors is None
-            else {id(t.untyped_storage()) for t in ignored_tensors}
+            else {id(t.untyped_storage()) for t in ignored_tensors if t is not None}
         )
 
         self.saved_tensor_dict = torch.utils.weak.WeakTensorKeyDictionary()
@@ -198,9 +198,8 @@ class SavedTensorContext:
             # str_local = f"{Color.red}local: {saved_tensor.to_local().device}, {saved_tensor.to_local().shape} {type(saved_tensor.to_local())}{Color.reset}"
             # logger.info(str_saved+str_local)
             # torch.cuda.synchronize()
-            data_ptr = saved_tensor.untyped_storage()
+            data_ptr = id(saved_tensor.untyped_storage()) if saved_tensor is not None else None
             # logger.info(f"{color.red}storage: {type(data_ptr)}{color.reset}")
-            data_ptr = id(data_ptr)
             if data_ptr not in self._ignored_data_ptrs:
                 self.saved_tensor_dict[saved_tensor] = data_ptr
                 self.saved_tensor_list.append(saved_tensor)
@@ -214,6 +213,7 @@ class SavedTensorContext:
         )
 
     def take_layer_pos(self):
+        # print("Taking layer pos", len(self.saved_tensor_list))
         self.layer_pos.append(len(self.saved_tensor_list))
 
     def __enter__(self) -> "SavedTensorContext":
@@ -235,7 +235,7 @@ class SavedTensorContext:
             if data_ptr not in accounted_for:
                 total_bytes += t.untyped_storage().nbytes()
                 accounted_for.add(data_ptr)
-        return total_bytes
+        return total_bytes/1024/1024
     
     @property
     def saved_tensor_mem_layer(self) -> list:
@@ -250,11 +250,13 @@ class SavedTensorContext:
             total_bytes = 0
             for i in range(initial_idx, final_idx):
                 t = self.saved_tensor_list[i]
+                if t is None:
+                    continue
                 data_ptr = id(t.untyped_storage())
                 if data_ptr not in accounted_for:
                     total_bytes += t.untyped_storage().nbytes()
                     accounted_for.add(data_ptr)
-            total_bytes_list.append(total_bytes)
+            total_bytes_list.append(total_bytes/1024/1024)
         return total_bytes_list
     
     
@@ -270,8 +272,8 @@ class WeakTensorList:
     def __getitem__(self, index):
         # Retrieve the tensor, if it's still alive
         tensor_ref = self._refs[index]()
-        if tensor_ref is None:
-            print(f"Tensor at index {index} has been garbage collected.")
+        # if tensor_ref is None:
+        #     print(f"Tensor at index {index} has been garbage collected.")
         return tensor_ref
 
     def __len__(self):

@@ -313,15 +313,45 @@ def main(job_config: JobConfig):
                 with train_context(optional_context_parallel_ctx), SavedTensorContext(
                     # ignored_tensors=model.parameters()
                 ) as saved_tensors:
-                    register_timing_hooks(model, timings, memory_usage, saved_tensors.take_layer_pos())
+                    # register_timing_hooks(model, timings, memory_usage, saved_tensors.take_layer_pos)
                     # with record_function("## forward ##"):
+                    print("input memory size:", input_ids.untyped_storage().nbytes()/1024/1024)
                     pred = model(input_ids)
                     loss = loss_fn(pred, labels)
                     # pred.shape=(bs, seq_len, vocab_size)
                     # need to free to before bwd to avoid peaking memory
+                    # print("saved_tensors:", saved_tensors.saved_tensor_mem_layer)
+                    print("total_saved_tensors:", saved_tensors.saved_tensor_mem)  
                     del pred
+                    
+
                     # with record_function("## backward ##"):
                     loss.backward()
+                    
+                    
+                layers_name = [f'layers.{i}' for i in range(8)]
+                layers_name = layers_name + ['norm', 'output', 'tok_embeddings']
+                total_weight_size = 0
+                total_grad_size = 0
+                # print weight size, grad size, and optimizer state size for each layers
+                for name, layer in model.named_modules():
+                    if name in layers_name:
+                        for t in layer.parameters():
+                            assert t.device == device
+                        total_weight_size_layer = sum([t.untyped_storage().nbytes() for t in layer.parameters()])/1024/1024
+                        total_grad_size += sum([t.grad.untyped_storage().nbytes() for t in layer.parameters()])/1024/1024
+                        print(name, 'weights', total_weight_size_layer, 'MB')
+                        total_weight_size += total_weight_size_layer
+                print('total weight size:', total_weight_size, 'MB')
+                print('total grads size:', total_grad_size, 'MB')
+                print('total optimizer state size:', total_weight_size*2, 'MB')
+
+                state = optimizers.optimizers[0].state_dict()['state']
+                optimizer_mem = 0
+                for k in state.keys():
+                    optimizer_mem += sum([t.untyped_storage().nbytes() for t in state[k].values()])/1024/1024
+                print('total optimizer state size:', optimizer_mem, 'MB')
+                        
 
             # clip gradients
             for m in model_parts:
@@ -434,11 +464,10 @@ def main(job_config: JobConfig):
                 )
                 
             
-            # print("saved_tensors:", saved_tensors.saved_tensor_mem_layer)
 
-        # if torch_profiler:
-        #     logger.info("Exporting memory profiler results")
-        #     torch_profiler.export_memory_timeline(f"memory_timeline.html", device=device)
+        if torch_profiler:
+            logger.info("Exporting memory profiler results")
+            # torch_profiler.export_memory_timeline(f"memory_timeline.html", device=device)
 
     if torch.distributed.get_rank() == 0:
         logger.info("Sleeping 2 seconds for other ranks to complete")
