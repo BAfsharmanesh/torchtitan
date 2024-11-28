@@ -9,8 +9,8 @@ import time
 from datetime import timedelta
 
 import torch
-
 from torch.distributed.elastic.multiprocessing.errors import record
+from torch.profiler import record_function
 
 from torchtitan import utils
 from torchtitan.checkpoint import CheckpointManager, TrainState
@@ -22,17 +22,19 @@ from torchtitan.metrics import build_gpu_memory_monitor, build_metric_logger
 from torchtitan.models import model_name_to_cls, model_name_to_tokenizer, models_config
 from torchtitan.optimizer import build_lr_schedulers, build_optimizers
 from torchtitan.parallelisms import (
+    ParallelDims,
     models_parallelize_fns,
     models_pipelining_fns,
-    ParallelDims,
 )
-from torchtitan.profiling import (
-    maybe_enable_memory_snapshot,
-    maybe_enable_profiling,
-    register_timing_hooks,
-    SavedTensorContext,
+from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
+from torchtitan.time_mem_profile import (
+    LayerTimeProfiler,
+    LayerMemoryProfiler,
+    SavedActivationContext,
+    get_layer_names,
+    get_param_act_profile,
+    save_metis_object,
 )
-from torch.profiler import record_function
 
 
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
@@ -134,6 +136,17 @@ def main(job_config: JobConfig):
         f"{color.blue}Model {model_name} {job_config.model.flavor} "
         f"{color.red}size: {model_param_count:,} total parameters{color.reset}"
     )
+
+    # filter_layers_name = get_layer_names(model, return_filtered=True)
+    total_layers_name = get_layer_names(model, return_filtered=False)
+    model_layer_profile = get_param_act_profile(
+        model_name + "_" + job_config.model.flavor,
+        model,
+        total_layers_name,
+        input_size=(job_config.training.batch_size, job_config.training.seq_len),
+    )
+    
+    print(model_layer_profile)
 
     # loss function to be shared by Pipeline Parallel and SPMD training
     def loss_fn(pred, labels):
@@ -251,10 +264,8 @@ def main(job_config: JobConfig):
         f"(warmup {job_config.training.warmup_steps})"
     )
 
-    timings = {}
-    memory_usage = {}
-
-
+    layer_time_profiler = LayerTimeProfiler(layer_names=total_layers_name)
+    layer_memory_profiler = LayerMemoryProfiler(layer_names=total_layers_name)
 
     with maybe_enable_profiling(
         job_config, global_step=train_state.step
@@ -266,11 +277,14 @@ def main(job_config: JobConfig):
             train_state.step += 1
             gc_handler.run(train_state.step)
 
+            layer_time_profiler.record_time_tic(key="total_time_ms", sync=True)
+
             # get batch
             data_load_start = time.perf_counter()
-            batch = next(data_iterator)
-            input_ids, labels = batch
-            ntokens_since_last_log += labels.numel()
+            with layer_time_profiler.record_time("batch_generator_time_ms", sync=True):
+                batch = next(data_iterator)
+                input_ids, labels = batch
+                ntokens_since_last_log += labels.numel()
             data_loading_times.append(time.perf_counter() - data_load_start)
 
             input_ids = input_ids.cuda()
@@ -310,47 +324,39 @@ def main(job_config: JobConfig):
                 )
             else:
                 # Non-PP forward / backward
-                with train_context(optional_context_parallel_ctx), SavedTensorContext(
-                    ignored_tensors=model.parameters()
-                ) as saved_tensors:
-                    register_timing_hooks(model, timings, memory_usage, saved_tensors.take_layer_pos)
-                    # with record_function("## forward ##"):
-                    pred = model(input_ids)
-                    loss = loss_fn(pred, labels)
-                    # pred.shape=(bs, seq_len, vocab_size)
+                layer_time_profiler.record_time_tic(
+                    key="forward_backward_time_ms", sync=True
+                )
+                with train_context(optional_context_parallel_ctx):
+                    with SavedActivationContext(
+                        ignored_tensors=model.parameters()
+                    ) as saved_activations:
+                        layer_time_profiler.register_timing_hooks(
+                            model,
+                            saved_activations.take_layer_pos,  # !! layer definition should be done and passed to the profiler
+                        )
+                        # with record_function("## forward ##"):
+                        pred = model(input_ids)
+                        loss = loss_fn(pred, labels)
+                        # pred.shape=(bs, seq_len, vocab_size)
+
+                        layer_memory_profiler.log_activation_memory_info(
+                            saved_activations.saved_tensor_mem_layer
+                        )
+
                     # need to free to before bwd to avoid peaking memory
-                    print("saved_tensors:", saved_tensors.saved_tensor_mem_layer, sum(saved_tensors.saved_tensor_mem_layer))
                     del pred
-                    
-                    print("total_saved_tensors:", saved_tensors.saved_tensor_mem)  
+
+                    # print("total_saved_tensors:", saved_tensors.saved_tensor_mem)
 
                     # with record_function("## backward ##"):
                     loss.backward()
-                    
-                    
-                layers_name = [f'layers.{i}' for i in range(8)]
-                layers_name = layers_name + ['norm', 'output', 'tok_embeddings']
-                total_weight_size = 0
-                total_grad_size = 0
-                # print weight size, grad size, and optimizer state size for each layers
-                for name, layer in model.named_modules():
-                    if name in layers_name:
-                        for t in layer.parameters():
-                            assert t.device == device
-                        total_weight_size_layer = sum([t.untyped_storage().nbytes() for t in layer.parameters()])/1024/1024
-                        total_grad_size += sum([t.grad.untyped_storage().nbytes() for t in layer.parameters()])/1024/1024
-                        print(name, 'weights', total_weight_size_layer, 'MB')
-                        total_weight_size += total_weight_size_layer
-                print('total weight size:', total_weight_size, 'MB')
-                print('total grads size:', total_grad_size, 'MB')
-                print('total optimizer state size:', total_weight_size*2, 'MB')
-
-                state = optimizers.optimizers[0].state_dict()['state']
-                optimizer_mem = 0
-                for k in state.keys():
-                    optimizer_mem += sum([t.untyped_storage().nbytes() for t in state[k].values()])/1024/1024
-                print('total optimizer state size:', optimizer_mem, 'MB')
-                        
+                layer_time_profiler.record_time_toc(
+                    key="forward_backward_time_ms", sync=True
+                )
+                layer_memory_profiler.log_weight_grad_optimizer_memory_info(
+                    model, optimizers.optimizers[0], device
+                )  # !! optimizer is defined per model parts (PP)
 
             # clip gradients
             for m in model_parts:
@@ -363,10 +369,12 @@ def main(job_config: JobConfig):
 
             # optimizer step
             checkpoint.maybe_wait_for_staging()
-            # timings['optimizer_step_start'] = time.time()
-            # with record_function("## optimizer ##"):
-            optimizers.step()
-            # timings['optimizer_step_end'] = time.time()
+
+            with layer_time_profiler.record_time("optimizer_time_ms", sync=True):
+                # timings['optimizer_step_start'] = time.time()
+                # with record_function("## optimizer ##"):
+                optimizers.step()
+                # timings['optimizer_step_end'] = time.time()
             lr_schedulers.step()
 
             # calculate float8 dynamic amax/scale for all-parameter for FSDP2
@@ -444,6 +452,10 @@ def main(job_config: JobConfig):
                 time_last_log = time.perf_counter()
                 gpu_memory_monitor.reset_peak_stats()
 
+            gpu_mem_stats = gpu_memory_monitor.get_peak_stats()
+            layer_memory_profiler.log_max_reserved_gib(gpu_mem_stats.max_reserved_gib)
+            layer_time_profiler.record_time_toc(key="total_time_ms", sync=True)
+
             checkpoint.save(
                 train_state.step, force=(train_state.step == job_config.training.steps)
             )
@@ -461,8 +473,6 @@ def main(job_config: JobConfig):
                     timeout=timedelta(seconds=job_config.comm.train_timeout_seconds),
                     world_mesh=world_mesh,
                 )
-                
-            
 
         if torch_profiler:
             logger.info("Exporting memory profiler results")
@@ -474,8 +484,33 @@ def main(job_config: JobConfig):
 
     metric_logger.close()
     logger.info("Training completed")
-    # logger.info(f"Timing information: {timings}")
+    # logger.info(f"Timing information: {layer_time_profiler.get_duration_timings()}")
+    # logger.info(
+    #     f"Timing information: {layer_time_profiler.get_average_timings(warm=3, active=3, layers_name = filter_layers_name)}"
+    # )
+    # logger.info(f"Memory information: {layer_memory_profiler.get_memory_usage()}")
+    # logger.info(
+    #     f"Memory information: {layer_memory_profiler.get_average_memory_usage(warm=3, active=3, layers_name = filter_layers_name)}"
+    # )
     # logger.info(f"Memory information: {memory_usage}")
+
+    metis_input = save_metis_object(
+        layer_time_profiler.get_average_timings(
+            warm=3, active=3, layers_name=total_layers_name
+        ),
+        layer_memory_profiler.get_average_memory_usage(
+            warm=3, active=3, layers_name=total_layers_name
+        ),
+        model_layer_profile,
+        './outputs',
+        job_config.training.tensor_parallel_degree,
+        job_config.training.batch_size,
+        "A6000",
+        # actual__profiler_number_of_layers=(32,4),
+        # first_layer_index=1,
+    )
+
+    # logger.info(f"Metis information: {metis_input}")
 
 
 if __name__ == "__main__":
