@@ -805,9 +805,9 @@ def save_metis_object(
         )
 
     model_metrics_json = json.dumps(asdict(model_metrics), indent=2)
-
+    tmp_model_name = model_profile["model_name"]
     # save file to file_path/"DeviceType.{device}_tp{tp}_bs{bs}".json
-    file_path = Path(file_path) / f"DeviceType.{device}_tp{tp}_bs{bs}.json"
+    file_path = Path(file_path) / f"{tmp_model_name}_DeviceType.{device}_tp{tp}_bs{bs}.json"
     with open(file_path.absolute(), "w") as f:
         f.write(model_metrics_json)
 

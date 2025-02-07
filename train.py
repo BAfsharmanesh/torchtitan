@@ -41,7 +41,7 @@ from torchtitan.time_mem_profile import (
 @record
 def main(job_config: JobConfig):
     init_logger()
-    logger.info(f"Starting job: {job_config.job.description}")
+    logger.info(f"Starting job: {job_config.job.description} bs:{job_config.training.batch_size} tp:{job_config.training.tensor_parallel_degree}")
 
     # used for colorful printing
     color = utils.Color if job_config.metrics.enable_color_printing else utils.NoColor
@@ -146,7 +146,7 @@ def main(job_config: JobConfig):
         input_size=(job_config.training.batch_size, job_config.training.seq_len),
     )
     
-    print(model_layer_profile)
+    # print(model_layer_profile)
 
     # loss function to be shared by Pipeline Parallel and SPMD training
     def loss_fn(pred, labels):
@@ -493,21 +493,23 @@ def main(job_config: JobConfig):
     #     f"Memory information: {layer_memory_profiler.get_average_memory_usage(warm=3, active=3, layers_name = filter_layers_name)}"
     # )
     # logger.info(f"Memory information: {memory_usage}")
-
+    
+    number_of_layers = {"271M": 16, "1B": 18, "7B": 32, "13B": 40, "26B": 80}
+    NUMBER_OF_LAYERS = number_of_layers[job_config.model.flavor]
     metis_input = save_metis_object(
         layer_time_profiler.get_average_timings(
-            warm=3, active=3, layers_name=total_layers_name
+            warm=3, active=7, layers_name=total_layers_name
         ),
         layer_memory_profiler.get_average_memory_usage(
-            warm=3, active=3, layers_name=total_layers_name
+            warm=3, active=7, layers_name=total_layers_name
         ),
         model_layer_profile,
         './outputs',
         job_config.training.tensor_parallel_degree,
         job_config.training.batch_size,
         "A6000",
-        # actual__profiler_number_of_layers=(32,4),
-        # first_layer_index=1,
+        actual__profiler_number_of_layers=(NUMBER_OF_LAYERS,4),
+        first_layer_index=1,
     )
 
     # logger.info(f"Metis information: {metis_input}")
