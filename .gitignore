@@ -1,7 +1,7 @@
 log.txt
 
 train_configs/*
-torchtitan/models
+# torchtitan/models
 __pycache__
 .idea
 .DS_Store

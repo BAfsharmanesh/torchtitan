@@ -16,7 +16,7 @@ from torch.distributed.pipelining import PipelineStage
 
 from torchtitan.config_manager import JobConfig
 from torchtitan.logging import logger
-from torchtitan.models.llama.model import ModelArgs
+from torchtitan.models.wideresnet import ModelArgs
 from torchtitan.parallelisms.parallel_dims import ParallelDims
 from torchtitan.parallelisms.pipelining_utils import (
     build_pipeline_schedule,
@@ -28,7 +28,7 @@ from torchtitan.parallelisms.pipelining_utils import (
 DeviceType = Union[int, str, torch.device]
 
 
-def pipeline_llama(
+def pipeline_wideresnet(
     model: nn.Module,
     pp_mesh: DeviceMesh,
     parallel_dims: ParallelDims,
@@ -37,7 +37,7 @@ def pipeline_llama(
     model_config: ModelArgs,
     loss_fn: Callable[..., torch.Tensor],
 ):
-    stages, models = pipeline_llama_manual_split(
+    stages, models = pipeline_moe_manual_split(
         model, pp_mesh, parallel_dims, job_config, device, model_config
     )
 
@@ -46,7 +46,7 @@ def pipeline_llama(
     return pp_schedule, models
 
 
-def pipeline_llama_manual_split(
+def pipeline_moe_manual_split(
     whole_model: nn.Module,
     pp_mesh: DeviceMesh,
     parallel_dims: ParallelDims,
@@ -74,8 +74,8 @@ def pipeline_llama_manual_split(
 
     def _build_stage(stage_idx, start_layer, stop_layer, is_first=False, is_last=False):
         model = copy.deepcopy(whole_model)
-        if not is_first:
-            model.tok_embeddings = None
+        # if not is_first:
+        #     model.is_first = False
 
         drop_layers = start_layer is not None
         for name in list(model.layers.keys()):
@@ -87,9 +87,10 @@ def pipeline_llama_manual_split(
             if drop_layers:
                 del model.layers[name]
 
-        if not is_last:
-            model.norm = None
-            model.output = None
+        # if not is_last:
+        #     # model.is_last = False
+        #     model.classifier = None
+            # model.output = None
 
         stage = PipelineStage(
             model,

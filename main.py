@@ -41,22 +41,3 @@ if __name__ == "__main__":
                 ]
                 subprocess.run(command)
                 print(f"-- Running {model}-{bs}-{tp} is Done!")
-
-# runing command to log to a file and run in background
-# python3 main.py > log.txt 2>&1 &
-
-
-# failed:
-# 271M_tp8_bs2
-# 1B_tp4_bs32
-# 26B_tp4_bs1
-
-# torchrun --nproc_per_node 8 --rdzv_backend c10d --rdzv_endpoint localhost:0 --local-ranks-filter 0 --role rank --tee 3 train.py --job.config_file ./train_configs/llama2.toml --model.flavor 271M --training.batch_size 2 --training.tensor_parallel_degree 8 --job.description 'Llama2 271M training'
-# torchrun --nproc_per_node 4 --rdzv_backend c10d --rdzv_endpoint localhost:0 --local-ranks-filter 0 --role rank --tee 3 train.py --job.config_file ./train_configs/llama2.toml --model.flavor 1B --training.batch_size 32 --training.tensor_parallel_degree 4 --job.description 'Llama2 1B training'
-# torchrun --nproc_per_node 4 --rdzv_backend c10d --rdzv_endpoint localhost:0 --local-ranks-filter 0 --role rank --tee 3 train.py --job.config_file ./train_configs/llama2.toml --model.flavor 26B --training.batch_size 1 --training.tensor_parallel_degree 4 --job.description 'Llama2 26B training'
-
-
-# torchrun --nproc_per_node 4 --rdzv_backend c10d --rdzv_endpoint localhost:0 \
-#   --local-ranks-filter 0 --role rank --tee 3 \
-#   train.py --job.config_file ./train_configs/llama2.toml --model.flavor 271M \
-#   --training.batch_size 32 --training.tensor_parallel_degree 4 --job.description 'Llama2 1B training'

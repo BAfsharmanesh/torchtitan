@@ -74,7 +74,9 @@ class LayerTimeProfiler:
         recorded_layer_names = [i[0] for i in layer_compute_total_ms_dict]
         avg_timings["layer_compute_total_ms"] = []
         for ln in layers_name:
-            assert ln in recorded_layer_names, f"Layer {ln} not found in the model"
+            assert (
+                ln in recorded_layer_names
+            ), f"Layer {ln} not found in the model layers {recorded_layer_names}"
             avg_timings["layer_compute_total_ms"].append(
                 layer_compute_total_ms_dict[recorded_layer_names.index(ln)][1]
             )
@@ -212,22 +214,37 @@ class LayerMemoryProfiler:
         self.total_activation_mem_size.append(sum(saved_tensor_mem_layer))
 
     def log_weight_grad_optimizer_memory_info(self, model, optimizers, device):
+        """ log weight, grad, and optimizer memory usage for each layer in self.layer_names
+
+        Args:
+            model (_type_): _description_
+            optimizers (_type_): _description_
+            device (_type_): _description_
+
+        Raises:
+            ValueError: _description_
+        """
 
         total_weight_size = 0
         total_grad_size = 0
-        # print weight size, grad size, and optimizer state size for each layers
+        
+        # iterate over each layer and get the memort address of the parameters, weights and grads memory usage
+        # if the layer is in self.layer_names
         id_layer_param_num = {}
+        id_param_num_untracked = {}
         for name, layer in model.named_modules():
             if name in self.layer_names:
+                
+                # get memory address of the parameters of a layer
                 for t in layer.parameters():
                     assert t.device == device
                     if isinstance(t, torch.distributed.tensor.DTensor):
-                        id_layer_param_num[id(t.to_local().untyped_storage())] = {
-                            "layer": name
-                        }
+                        storage_id = id(t.to_local().untyped_storage())
                     else:
-                        id_layer_param_num[id(t.untyped_storage())] = {"layer": name}
+                        storage_id = id(t.untyped_storage())
+                    id_layer_param_num[storage_id] = {"layer": name}
 
+                # get memory usage of the parameters for a layer
                 weight_size_layer = (
                     sum(
                         [
@@ -243,6 +260,7 @@ class LayerMemoryProfiler:
                     / 1024
                 )
 
+                # get memory usage of the grads for a layer
                 grad_size_layer = (
                     sum(
                         [
@@ -252,6 +270,7 @@ class LayerMemoryProfiler:
                                 else t.grad.untyped_storage().nbytes()
                             )
                             for t in layer.parameters()
+                            if t.grad is not None
                         ]
                     )
                     / 1024
@@ -262,6 +281,16 @@ class LayerMemoryProfiler:
                 self.grad_memory_usage[name].append(grad_size_layer)
                 total_weight_size += weight_size_layer
                 total_grad_size += grad_size_layer
+            
+            else:
+                # get memory address of the parameters of a layer
+                for t in layer.parameters():
+                    assert t.device == device
+                    if isinstance(t, torch.distributed.tensor.DTensor):
+                        storage_id = id(t.to_local().untyped_storage())
+                    else:
+                        storage_id = id(t.untyped_storage())
+                    id_param_num_untracked[storage_id] = {"layer": name}
 
         # print("total weight size:", total_weight_size, "MB")
         # print("total grads size:", total_grad_size, "MB")
@@ -270,26 +299,39 @@ class LayerMemoryProfiler:
         self.total_weight_mem_size.append(total_weight_size)
         self.total_grad_mem_size.append(total_grad_size)
 
+        # assign param_num to each parameter in the model, so each parameter can be identified by its index and storage id
         for t_n, t in enumerate(model.parameters()):
             if isinstance(t, torch.distributed.tensor.DTensor):
-                id_layer_param_num[id(t.to_local().untyped_storage())][
-                    "param_num"
-                ] = t_n
+                storage_id = id(t.to_local().untyped_storage())
             else:
-                id_layer_param_num[id(t.untyped_storage())]["param_num"] = t_n
+                storage_id = id(t.untyped_storage())
+
+            if storage_id not in id_layer_param_num:
+                # it must be in id_param_num_untracked
+                if storage_id not in id_param_num_untracked:
+                    raise ValueError(
+                        f"Layer not found for the parameter with storage id {storage_id}"
+                    )
+            else:
+                id_layer_param_num[storage_id]["param_num"] = t_n
 
         # print("id_layer_paramnum:", id_layer_paramnum)
 
+        # dict with key: param_num, value: layer and id
         param_num_layer_id = {
             v["param_num"]: {"layer": v["layer"], "id": k}
             for k, v in id_layer_param_num.items()
         }
 
+        # list of layers in the model that we recorded memory usage for
         layer_list = [v["layer"] for k, v in id_layer_param_num.items()]
 
         # print(optimizers.optimizers[0].state_dict())
         state = optimizers.state_dict()["state"]
         # params = optimizers.optimizers[0].state_dict()["param_groups"][0]["params"]
+        
+        # iterate over each layer and get the memory address of the optimizer state for each layer
+        # if the layer is in (layer_list) self.layer_names
         optimizer_mem = 0
         optimizer_mem_layer = {}
         for layer in layer_list:
@@ -563,9 +605,11 @@ class ModelLayerProfile:
                 parameters_per_layer_bytes.append((name, total_params))
         return parameters_per_layer_bytes
 
-    def get_activation_parameters_per_layer(self, input_size) -> list:
-        # Prepare a dummy input based on the specified input size
-        dummy_input = torch.empty(*input_size, device="meta", dtype=torch.long)
+    def get_activation_parameters_per_layer(self, dummy_input) -> list:
+
+        # copy and move dummy_input to meta device
+        dummy_input = dummy_input.clone().to("meta")
+
         activation_parameters_bytes = []
 
         def get_activation_hook(module_name):
@@ -573,7 +617,13 @@ class ModelLayerProfile:
             def activation_hook(module, input, output):
                 if output is not None:
                     # Calculate the activation size in bytes for the output
-                    activation_size = output.element_size() * output.numel()
+                    # if output is tuple, sum the size of each tensor
+                    if isinstance(output, tuple):
+                        activation_size = sum(
+                            o.element_size() * o.numel() for o in output
+                        )
+                    else:
+                        activation_size = output.element_size() * output.numel()
                     activation_parameters_bytes.append((module_name, activation_size))
 
             return activation_hook
@@ -614,9 +664,7 @@ class ModelLayerProfile:
         return list(activation_parameters_bytes_dict.items())
 
 
-def get_param_act_profile(
-    model_name, model, layer_names: List[str], input_size: Tuple[int, int]
-) -> dict:
+def get_param_act_info(model_name, model, layer_names: List[str], dummy_input) -> dict:
 
     profiler = ModelLayerProfile(model, layer_names=layer_names)
     # Get the total parameters size
@@ -631,7 +679,7 @@ def get_param_act_profile(
         parameters_per_layer_bytes.append(tmp[recorded_layer_names.index(ln)][1])
 
     # Get the activation size per layer
-    tmp = profiler.get_activation_parameters_per_layer(input_size)
+    tmp = profiler.get_activation_parameters_per_layer(dummy_input)
     recorded_layer_names = [i[0] for i in tmp]
     activation_parameters_bytes = []
     for ln in layer_names:
@@ -645,6 +693,64 @@ def get_param_act_profile(
         "parameters_per_layer_bytes": parameters_per_layer_bytes,
         "activation_parameters_bytes": activation_parameters_bytes,
     }
+
+
+# ------ reconstruct model ------
+
+
+def measure_activation_shape(model, layers_to_monitor, dummy_input):
+
+    # copy and move dummy_input to meta device
+    dummy_input = dummy_input.clone().to("meta")
+
+    # Measure the activation shape
+    # Register hooks
+    activations = {}
+    activations_size = {}
+    input_shapes = {}
+
+    def get_hook(module_name):
+        def hook_fn(module, input, output):
+            if output is not None:
+                # if isinstance(output, tuple) then keep both shapes
+                if isinstance(output, tuple):
+                    activations[module_name] = output[0].shape
+                    activations_size[module_name] = (
+                        output[0].nelement() * output[0].element_size() / 1024 / 1024
+                    )
+                else:
+                    activations[module_name] = output.shape
+                    activations_size[module_name] = (
+                        output.nelement() * output.element_size() / 1024 / 1024
+                    )
+            if input is not None:
+                if isinstance(input, tuple):
+                    input_shapes[module_name] = (i.shape for i in input)
+                else:
+                    input_shapes[module_name] = input.shape
+
+        return hook_fn
+
+    hooks = []
+    for name, module in model.named_modules():
+        if name in layers_to_monitor:
+            hook = module.register_forward_hook(get_hook(name))
+            hooks.append(hook)
+
+    # Run the model on meta device
+    device = torch.device("meta")
+    # dummy_input = torch.randn(input_size).to(device)
+    with torch.no_grad():
+        with torch.device("meta"):
+            model = model.to(device)
+            model.eval()
+            model(dummy_input)
+
+    # Remove hooks
+    for hook in hooks:
+        hook.remove()
+
+    return list(activations.values()), list(activations_size.values()), input_shapes
 
 
 # ----------------- utils -----------------
@@ -667,6 +773,7 @@ def save_metis_object(
     device: str,
     actual__profiler_number_of_layers=None,
     first_layer_index=None,
+    rank=None,
 ) -> Dict:
 
     @dataclass
@@ -757,13 +864,12 @@ def save_metis_object(
         model_metrics.model.parameters.parameters_per_layer_bytes = tmp2
 
         model_metrics.model.parameters.total_parameters_bytes = sum(tmp2)
-        
+
         tmp = model_metrics.model.parameters.activation_parameters_bytes
         tmp2, avg2 = match_list_to_full_model(
             tmp, actual_n_layers, profiled_n_layers, first_layer_index
         )
         model_metrics.model.parameters.activation_parameters_bytes = tmp2
-
 
         # execution time
 
@@ -807,7 +913,14 @@ def save_metis_object(
     model_metrics_json = json.dumps(asdict(model_metrics), indent=2)
     tmp_model_name = model_profile["model_name"]
     # save file to file_path/"DeviceType.{device}_tp{tp}_bs{bs}".json
-    file_path = Path(file_path) / f"{tmp_model_name}_DeviceType.{device}_tp{tp}_bs{bs}.json"
+    if rank is not None:
+        rank = f"_{rank}"
+    else:
+        rank = ""
+    file_path = (
+        Path(file_path)
+        / f"{tmp_model_name}_DeviceType.{device}{rank}_tp{tp}_bs{bs}.json"
+    )
     with open(file_path.absolute(), "w") as f:
         f.write(model_metrics_json)
 

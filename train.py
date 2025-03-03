@@ -32,8 +32,9 @@ from torchtitan.time_mem_profile import (
     LayerMemoryProfiler,
     SavedActivationContext,
     get_layer_names,
-    get_param_act_profile,
+    get_param_act_info,
     save_metis_object,
+    measure_activation_shape,
 )
 
 
@@ -41,7 +42,9 @@ from torchtitan.time_mem_profile import (
 @record
 def main(job_config: JobConfig):
     init_logger()
-    logger.info(f"Starting job: {job_config.job.description} bs:{job_config.training.batch_size} tp:{job_config.training.tensor_parallel_degree}")
+    logger.info(
+        f"Starting job: {job_config.job.description} bs:{job_config.training.batch_size} tp:{job_config.training.tensor_parallel_degree}"
+    )
 
     # used for colorful printing
     color = utils.Color if job_config.metrics.enable_color_printing else utils.NoColor
@@ -90,31 +93,66 @@ def main(job_config: JobConfig):
 
     model_name = job_config.model.name
 
-    # build tokenizer
-    tokenizer_type = model_name_to_tokenizer[model_name]
-    tokenizer = build_tokenizer(tokenizer_type, job_config.model.tokenizer_path)
-
-    # build dataloader
-    data_loader = build_hf_data_loader(
-        job_config.training.dataset,
-        job_config.training.dataset_path,
-        tokenizer,
-        job_config.training.batch_size,
-        job_config.training.seq_len,
-        dp_degree,
-        dp_rank,
-    )
-
     # build model (using meta init)
     model_cls = model_name_to_cls[model_name]
     model_config = models_config[model_name][job_config.model.flavor]
-    # set the model configs from training inputs:
-    # 1. norm type to decide which norm layer to use
-    # 2. vocab size from tokenizer
-    # 3. max_seq_len base on inputs
-    model_config.norm_type = job_config.model.norm_type
-    model_config.vocab_size = tokenizer.n_words
-    model_config.max_seq_len = job_config.training.seq_len
+
+    if job_config.model.name == "llama2":
+        # build tokenizer
+        tokenizer_type = model_name_to_tokenizer[model_name]
+        tokenizer = build_tokenizer(tokenizer_type, job_config.model.tokenizer_path)
+        # build dataloader
+        data_loader = build_hf_data_loader(
+            job_config.training.dataset,
+            job_config.training.dataset_path,
+            tokenizer,
+            job_config.training.batch_size,
+            job_config.training.seq_len,
+            dp_degree,
+            dp_rank,
+        )
+    elif job_config.model.name == "moe":
+        batch_input_size = (
+            job_config.training.batch_size,
+            job_config.training.seq_len,
+            model_config.dim,
+        )
+        data_list = [
+            (
+                torch.randn(batch_input_size),
+                torch.randint(
+                    0, model_config.num_classes, (job_config.training.batch_size,)
+                ),
+            )
+            for _ in range(job_config.training.steps)
+        ]
+        data_loader = iter(data_list)
+    elif job_config.model.name == "wideresnet":
+        batch_input_size = (
+            job_config.training.batch_size,
+            model_config.input_channels,
+            model_config.input_size,
+            model_config.input_size,
+        )
+        data_list = [
+            (
+                torch.randn(batch_input_size),
+                torch.randint(
+                    0, model_config.num_classes, (job_config.training.batch_size,)
+                ),
+            )
+            for _ in range(job_config.training.steps)
+        ]
+        data_loader = iter(data_list)
+
+    if job_config.model.name == "llama2":
+        # set the model configs from training inputs:
+        # 1. norm type to decide which norm layer to use
+        # 2. vocab size from tokenizer
+        # 3. max_seq_len base on inputs
+        model_config.norm_type = job_config.model.norm_type
+        model_config.vocab_size = tokenizer.n_words
+        model_config.max_seq_len = job_config.training.seq_len
 
     logger.info(f"Building {model_name} {job_config.model.flavor} with {model_config}")
     with torch.device("meta"):
@@ -127,32 +165,102 @@ def main(job_config: JobConfig):
 
     # log model size
     model_param_count = utils.get_num_params(model)
-    num_flop_per_token = utils.get_num_flop_per_token(
-        utils.get_num_params(model, exclude_embedding=True),
-        model_config,
-        job_config.training.seq_len,
-    )
+
+    if job_config.model.name == "llama2":
+        num_flop_per_token = utils.get_num_flop_per_token(
+            utils.get_num_params(model, exclude_embedding=True),
+            model_config,
+            job_config.training.seq_len,
+        )
+    else:
+        num_flop_per_token = 0
+
     logger.info(
         f"{color.blue}Model {model_name} {job_config.model.flavor} "
         f"{color.red}size: {model_param_count:,} total parameters{color.reset}"
     )
 
-    # filter_layers_name = get_layer_names(model, return_filtered=True)
+    # loss function to be shared by Pipeline Parallel and SPMD training
+    if config.model.name == "llama2":
+
+        def loss_fn(pred, labels):
+            return torch.nn.functional.cross_entropy(
+                pred.flatten(0, 1).float(), labels.flatten(0, 1)
+            )
+
+    elif config.model.name == "moe":
+
+        def get_loss_fn():
+            criterion = torch.nn.CrossEntropyLoss()
+
+            def loss_fn(output, target):
+                output, total_aux_loss = output
+                output = output.mean(dim=1)
+                loss = criterion(output, target)
+                loss = loss + total_aux_loss
+                return loss
+
+            return loss_fn
+
+        loss_fn = get_loss_fn()
+    
+    elif config.model.name == "wideresnet":
+        
+        def loss_fn(pred, labels):
+            return torch.nn.functional.cross_entropy(pred, labels)    
+    
+
+    def get_dummy_input(config, model_config):
+        # Prepare a dummy input based on the specified input size
+        if config.model.name == "llama2":
+            dummy_input = torch.randint(
+                0,
+                model_config.vocab_size,
+                (job_config.training.batch_size, job_config.training.seq_len),
+                device="meta",
+                dtype=torch.long,
+            )
+        elif config.model.name == "moe":
+            batch_input_size = (
+                job_config.training.batch_size,
+                job_config.training.seq_len,
+                model_config.dim,
+            )
+            dummy_input = torch.empty(
+                *batch_input_size, device="meta", dtype=torch.float32
+            )
+
+        elif config.model.name == "wideresnet":
+            batch_input_size = (
+                job_config.training.batch_size,
+                model_config.input_channels,
+                model_config.input_size,
+                model_config.input_size,
+            )
+            dummy_input = torch.empty(
+                *batch_input_size, device="meta", dtype=torch.float32
+            )
+        else:
+            raise ValueError(f"Unsupported model name: {config.model.name}")
+        return dummy_input
+
+    dummy_input = get_dummy_input(config, model_config)
     total_layers_name = get_layer_names(model, return_filtered=False)
-    model_layer_profile = get_param_act_profile(
+    print(f"{total_layers_name=}")
+    model_layer_profile = get_param_act_info(
         model_name + "_" + job_config.model.flavor,
         model,
         total_layers_name,
-        input_size=(job_config.training.batch_size, job_config.training.seq_len),
+        dummy_input=dummy_input,
     )
-    
-    # print(model_layer_profile)
 
-    # loss function to be shared by Pipeline Parallel and SPMD training
-    def loss_fn(pred, labels):
-        return torch.nn.functional.cross_entropy(
-            pred.flatten(0, 1).float(), labels.flatten(0, 1)
+    print(f"{model_layer_profile=}")
+    activation_size_name = [
+        (act_size, layer_name)
+        for act_size, layer_name in zip(
+            model_layer_profile["activation_parameters_bytes"], total_layers_name
         )
+    ]
 
     if job_config.training.compile:
         loss_fn = torch.compile(loss_fn)
@@ -184,6 +292,20 @@ def main(job_config: JobConfig):
         model.train()
 
         model_parts = [model]
+
+    total_layers_name = get_layer_names(model_parts[0], return_filtered=False)
+    print(f"{total_layers_name=}")
+
+    activation_size = []
+    for layer_name in total_layers_name:
+        for act_size, name in activation_size_name:
+            if layer_name == name:
+                activation_size.append(act_size / 1024 / 1024)
+                break
+
+    # _, activation_size, _ = measure_activation_shape(
+    #     model, total_layers_name, dummy_input
+    # )
 
     gpu_mem_stats = gpu_memory_monitor.get_peak_stats()
     logger.info(
@@ -304,10 +426,20 @@ def main(job_config: JobConfig):
             )
 
             if parallel_dims.pp_enabled:
+                # keep track of forward and backward time
+                layer_time_profiler.record_time_tic(
+                    key="forward_backward_time_ms", sync=True
+                )
+
                 # Pipeline Parallel forward / backward inside step() call
                 is_last_stage = pp_mesh.get_local_rank() == pp_mesh.size() - 1
 
                 with train_context(optional_context_parallel_ctx):
+                    layer_time_profiler.register_timing_hooks(
+                        model_parts[0],
+                        # saved_activations.take_layer_pos,  # !! layer definition should be done and passed to the profiler
+                    )
+
                     if pp_mesh.get_local_rank() == 0:
                         pp_schedule.step(input_ids)
                     elif is_last_stage:
@@ -322,6 +454,19 @@ def main(job_config: JobConfig):
                     if is_last_stage
                     else torch.Tensor([-1.0])
                 )
+
+                # keep track of forward and backward time
+                layer_time_profiler.record_time_toc(
+                    key="forward_backward_time_ms", sync=True
+                )
+
+                layer_memory_profiler.log_weight_grad_optimizer_memory_info(
+                    model_parts[0], optimizers.optimizers[0], device
+                )
+
+                # ? currently, I manually set activations memory usage
+                layer_memory_profiler.log_activation_memory_info(activation_size)
+
             else:
                 # Non-PP forward / backward
                 layer_time_profiler.record_time_tic(
@@ -493,9 +638,12 @@ def main(job_config: JobConfig):
     #     f"Memory information: {layer_memory_profiler.get_average_memory_usage(warm=3, active=3, layers_name = filter_layers_name)}"
     # )
     # logger.info(f"Memory information: {memory_usage}")
-    
-    number_of_layers = {"271M": 16, "1B": 18, "7B": 32, "13B": 40, "26B": 80}
-    NUMBER_OF_LAYERS = number_of_layers[job_config.model.flavor]
+
+    if config.model.name == "llama2":
+        number_of_layers = model_config.n_layers
+    elif config.model.name == "moe":
+        number_of_layers = model_config.n_layers
+
     metis_input = save_metis_object(
         layer_time_profiler.get_average_timings(
             warm=3, active=7, layers_name=total_layers_name
@@ -504,12 +652,13 @@ def main(job_config: JobConfig):
             warm=3, active=7, layers_name=total_layers_name
         ),
         model_layer_profile,
-        './outputs',
+        "./outputs",
         job_config.training.tensor_parallel_degree,
         job_config.training.batch_size,
         "A6000",
-        actual__profiler_number_of_layers=(NUMBER_OF_LAYERS,4),
+        actual__profiler_number_of_layers=None,  # (number_of_layers, 4),
         first_layer_index=1,
+        rank=pp_mesh.get_local_rank() if parallel_dims.pp_enabled else None,
     )
 
     # logger.info(f"Metis information: {metis_input}")
