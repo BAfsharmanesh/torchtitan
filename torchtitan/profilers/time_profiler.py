@@ -15,84 +15,99 @@ class TimeProfiler(BaseProfiler):
             layer_names: List of layer names to profile
         """
         super().__init__(layer_names)
-        self.reset()
+        self.hook_layers = layer_names  # Match original naming
+        self.timings = {}
+        self.memory_usage = {}
+        self.hooks = {}
         
     def reset(self) -> None:
         """Reset all timing measurements."""
-        self.timings = {}  # Changed from layer_times to match original
-        self.memory_usage = {}  # Added to match original
-        self._hooks = {}
+        self.timings.clear()
+        self.memory_usage.clear()
+        self.hooks.clear()
         
     def register_timing_hooks(self, model: torch.nn.Module, func: Optional[Callable] = None) -> None:
-        """Register timing hooks on model layers (compatibility method)."""
-        self.register_hooks(model)
-        
-    def register_hooks(self, model: torch.nn.Module) -> None:
         """Register timing hooks on model layers."""
         for name, module in model.named_modules():
-            if name in self.layer_names:
-                # Register start and end timing hooks
+            if name in self.hook_layers:
+                # Start timing
                 forward_pre_hook = module.register_forward_pre_hook(self._forward_pre_hook(name))
+                # End timing
                 forward_hook = module.register_forward_hook(self._forward_hook(name))
-                backward_hook = module.register_full_backward_hook(self._backward_hook(name))
-                self._hooks[name] = [forward_pre_hook, forward_hook, backward_hook]
-                
+                self.hooks[name] = [forward_pre_hook, forward_hook]
+        
     def remove_hooks(self) -> None:
-        """Remove all registered timing hooks."""
-        super().remove_hooks()
+        """Remove all registered hooks."""
+        for hooks in self.hooks.values():
+            for hook in hooks:
+                hook.remove()
+        self.hooks.clear()
         
     def _forward_pre_hook(self, name: str):
         def hook(module, input):
-            if name not in self.timings:
+            if f"{name}_start" not in self.timings:
                 self.timings[f"{name}_start"] = []
-                self.timings[f"{name}_end"] = []
             self.timings[f"{name}_start"].append(time.perf_counter())
         return hook
         
     def _forward_hook(self, name: str):
         def hook(module, input, output):
+            if f"{name}_end" not in self.timings:
+                self.timings[f"{name}_end"] = []
             self.timings[f"{name}_end"].append(time.perf_counter())
         return hook
         
-    def _backward_hook(self, name: str):
-        def hook(module, grad_input, grad_output):
-            if f"{name}_backward" not in self.timings:
-                self.timings[f"{name}_backward"] = []
-            self.timings[f"{name}_backward"].append(time.perf_counter())
-        return hook
+    def get_average_timings(self, warm: int, active: int, layers_name: List[str]) -> Dict[str, Any]:
+        """Get average timings across steps.
         
+        Args:
+            warm: Number of warmup steps to skip
+            active: Number of active steps to average over
+            layers_name: List of layer names to include in results
+            
+        Returns:
+            Dictionary containing averaged timings
+        """
+        assert active > 0, "Active steps should be greater than 0"
+        duration_timings = self.get_duration_timings()
+        avg_timings = {}
+        
+        for key, value in duration_timings.items():
+            assert len(value) >= warm + active, \
+                f"Number of timings for {key} is less than active+warm steps"
+            avg_timings[key] = sum(value[warm:warm + active]) / active
+
+        # Calculate layer compute times
+        layer_compute_total_ms = []
+        for name in layers_name:
+            if f"{name}_start" in self.timings and f"{name}_end" in self.timings:
+                times = []
+                for start, end in zip(
+                    self.timings[f"{name}_start"][warm:warm + active],
+                    self.timings[f"{name}_end"][warm:warm + active]
+                ):
+                    times.append((end - start) * 1000)  # Convert to ms
+                layer_compute_total_ms.append((name, sum(times) / len(times) if times else 0))
+
+        # Add layer compute times to results
+        avg_timings["layer_compute_total_ms"] = [t[1] for t in layer_compute_total_ms]
+
+        return avg_timings
+
     def get_metrics(self) -> Dict[str, Any]:
         """Get timing metrics for all layers."""
-        metrics = {}
-        for name in self.layer_names:
-            if f"{name}_start" in self.timings and f"{name}_end" in self.timings:
-                forward_times = [
-                    (end - start) * 1000  # Convert to milliseconds
-                    for start, end in zip(
-                        self.timings[f"{name}_start"],
-                        self.timings[f"{name}_end"]
-                    )
-                ]
-                metrics[name] = {
-                    "forward_time": sum(forward_times) / len(forward_times) if forward_times else 0
-                }
-        return metrics
+        return self.get_average_timings(0, 0, self.hook_layers)
 
     def get_duration_timings(self) -> Dict[str, List[float]]:
-        """Calculate duration between start and end timings.
-        
-        Returns:
-            Dictionary mapping layer names to lists of durations in milliseconds
-        """
+        """Calculate duration between start and end timings."""
         duration_timings = {}
-        for key, value in self.timings.items():
-            if key.endswith("_start") and key.replace("_start", "_end") in self.timings:
-                start_times = [t for t in value if t.endswith("_start")]
-                end_times = [t for t in value if t.endswith("_end")]
-                if start_times and end_times:
-                    duration_timings[key[:-5]] = [
-                        (end - start) * 1000 for start, end in zip(start_times, end_times)
-                    ]
+        for name in self.hook_layers:
+            if f"{name}_start" in self.timings and f"{name}_end" in self.timings:
+                durations = []
+                for start, end in zip(self.timings[f"{name}_start"], 
+                                    self.timings[f"{name}_end"]):
+                    durations.append((end - start) * 1000)  # Convert to ms
+                duration_timings[name] = durations
         return duration_timings
 
     @contextlib.contextmanager
