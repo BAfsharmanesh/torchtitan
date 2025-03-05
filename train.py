@@ -27,16 +27,17 @@ from torchtitan.parallelisms import (
     models_pipelining_fns,
 )
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
-from torchtitan.time_mem_profile import (
-    LayerTimeProfiler,
-    LayerMemoryProfiler,
+from torchtitan.profilers import (
+    TimeProfiler as LayerTimeProfiler,
+    MemoryProfiler as LayerMemoryProfiler,
     SavedActivationContext,
     get_layer_names,
     get_param_act_info,
-    save_metis_object,
+    save_metrics as save_metis_object,
     measure_activation_shape,
+    get_dummy_input,
+    slice_layers_2_fit_gpu
 )
-from torchtitan.time_mem_utils import slice_layers_2_fit_gpu, get_dummy_input
 
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
 @record
