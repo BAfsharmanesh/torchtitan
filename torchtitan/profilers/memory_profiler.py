@@ -151,6 +151,51 @@ class MemoryProfiler(BaseProfiler):
         
         return metrics
 
+    def get_average_memory_usage(self, warm: int, active: int, layers_name: List[str]) -> Dict[str, Any]:
+        """Get average memory usage across steps.
+        
+        Args:
+            warm: Number of warmup steps to skip
+            active: Number of active steps to average over
+            layers_name: List of layer names to include in results
+            
+        Returns:
+            Dictionary containing averaged memory metrics
+        """
+        assert active > 0, "Active steps should be greater than 0"
+        
+        # Calculate per-layer averages
+        layer_memory_total_mb = []
+        for name in layers_name:
+            total = 0
+            if name in self.activation_memory_usage:
+                values = self.activation_memory_usage[name][warm:warm + active]
+                total += sum(values) / len(values) if values else 0
+            if name in self.weight_memory_usage:
+                values = self.weight_memory_usage[name][warm:warm + active]
+                total += sum(values) / len(values) if values else 0
+            if name in self.grad_memory_usage:
+                values = self.grad_memory_usage[name][warm:warm + active]
+                total += sum(values) / len(values) if values else 0
+            if name in self.optimizer_memory_usage:
+                values = self.optimizer_memory_usage[name][warm:warm + active]
+                total += sum(values) / len(values) if values else 0
+            layer_memory_total_mb.append(total)
+
+        # Calculate totals
+        total_memory = {
+            "activation": sum(self.total_activation_mem_size[warm:warm + active]) / active if self.total_activation_mem_size else 0,
+            "weights": sum(self.total_weight_mem_size[warm:warm + active]) / active if self.total_weight_mem_size else 0,
+            "gradients": sum(self.total_grad_mem_size[warm:warm + active]) / active if self.total_grad_mem_size else 0,
+            "optimizer": sum(self.total_optimizer_mem_size[warm:warm + active]) / active if self.total_optimizer_mem_size else 0,
+            "total_memory": sum(layer_memory_total_mb)
+        }
+
+        return {
+            "total": total_memory,
+            "layer_memory_total_mb": layer_memory_total_mb
+        }
+
     @staticmethod
     def _get_storage_id(tensor: torch.Tensor) -> int:
         """Get unique storage ID for a tensor."""

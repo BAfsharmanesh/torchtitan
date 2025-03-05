@@ -57,42 +57,40 @@ class TimeProfiler(BaseProfiler):
             self.timings[f"{name}_end"].append(time.perf_counter())
         return hook
         
-    def get_average_timings(self, warm: int, active: int, layers_name: List[str]) -> Dict[str, Any]:
-        """Get average timings across steps.
-        
-        Args:
-            warm: Number of warmup steps to skip
-            active: Number of active steps to average over
-            layers_name: List of layer names to include in results
-            
-        Returns:
-            Dictionary containing averaged timings
-        """
+    def get_average_timings(self, warm, active, layers_name):
         assert active > 0, "Active steps should be greater than 0"
+
         duration_timings = self.get_duration_timings()
         avg_timings = {}
-        
         for key, value in duration_timings.items():
             assert len(value) >= warm + active, \
                 f"Number of timings for {key} is less than active+warm steps"
             avg_timings[key] = sum(value[warm:warm + active]) / active
 
-        # Calculate layer compute times
-        layer_compute_total_ms = []
-        for name in layers_name:
-            if f"{name}_start" in self.timings and f"{name}_end" in self.timings:
-                times = []
-                for start, end in zip(
-                    self.timings[f"{name}_start"][warm:warm + active],
-                    self.timings[f"{name}_end"][warm:warm + active]
-                ):
-                    times.append((end - start) * 1000)  # Convert to ms
-                layer_compute_total_ms.append((name, sum(times) / len(times) if times else 0))
+        layer_compute_total_ms_dict = {}
+        for layer, value in avg_timings.items():
+            layer_name = self._return_layer_name(layer)
+            if layer_name not in layer_compute_total_ms_dict:
+                layer_compute_total_ms_dict[layer_name] = 0
+            if layer_name in self.hook_layers:
+                layer_compute_total_ms_dict[layer_name] += value
 
-        # Add layer compute times to results
-        avg_timings["layer_compute_total_ms"] = [t[1] for t in layer_compute_total_ms]
+        layer_compute_total_ms_dict = list(layer_compute_total_ms_dict.items())
+
+        recorded_layer_names = [i[0] for i in layer_compute_total_ms_dict]
+        avg_timings["layer_compute_total_ms"] = []
+        for ln in layers_name:
+            assert ln in recorded_layer_names, \
+                f"Layer {ln} not found in the model layers {recorded_layer_names}"
+            avg_timings["layer_compute_total_ms"].append(
+                layer_compute_total_ms_dict[recorded_layer_names.index(ln)][1]
+            )
 
         return avg_timings
+
+    def _return_layer_name(self, name: str) -> str:
+        """Clean layer name by removing suffixes."""
+        return name.removesuffix("_backward").removesuffix("_forward")
 
     def get_metrics(self) -> Dict[str, Any]:
         """Get timing metrics for all layers."""
