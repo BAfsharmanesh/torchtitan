@@ -18,22 +18,6 @@ class BaseProfiler(ABC):
         self._metrics: Dict[str, List[float]] = {}
         self._hooks: Dict[str, List[Any]] = {}
 
-    @abstractmethod
-    def register_hooks(self, model: torch.nn.Module) -> None:
-        """Register profiling hooks on the model.
-        
-        Args:
-            model: The PyTorch model to profile
-        """
-        pass
-
-    @abstractmethod
-    def remove_hooks(self) -> None:
-        """Remove all registered profiling hooks."""
-        for hooks in self._hooks.values():
-            for hook in hooks:
-                hook.remove()
-        self._hooks.clear()
 
     @abstractmethod
     def reset(self) -> None:

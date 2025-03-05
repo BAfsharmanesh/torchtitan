@@ -28,13 +28,6 @@ class MemoryProfiler(BaseProfiler):
         self.total_optimizer_mem_size: List[float] = []
         self.max_reserved_gib: List[float] = []
 
-    def register_hooks(self, model: torch.nn.Module) -> None:
-        """Memory profiler doesn't use hooks, memory is tracked explicitly."""
-        pass
-
-    def remove_hooks(self) -> None:
-        """Memory profiler doesn't use hooks."""
-        pass
 
     def log_activation_memory_info(self, saved_tensor_mem_layer: List[float]) -> None:
         """Log activation memory usage for each layer.
