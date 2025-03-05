@@ -5,7 +5,7 @@ from typing import Dict, List, Any, Optional, Callable
 import torch
 from .base_profiler import BaseProfiler
 
-class LayerTimeProfiler(BaseProfiler):
+class TimeProfiler(BaseProfiler):
     """Profiles execution time of model layers."""
     
     def __init__(self, layer_names: Optional[List[str]] = None):

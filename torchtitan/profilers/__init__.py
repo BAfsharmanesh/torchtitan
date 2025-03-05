@@ -1,7 +1,7 @@
 from .base_profiler import BaseProfiler
 from .time_profiler import TimeProfiler
 from .memory_profiler import MemoryProfiler
-from .model_profiler import ModelLayerProfile, slice_layers_2_fit_gpu
+from .model_profiler import ModelLayerProfile
 from .activation_profiler import SavedActivationContext, measure_activation_shape
 from .model_utils import get_layer_names, get_param_act_info
 from .utils import (
@@ -14,7 +14,8 @@ from .utils import (
     ExecutionTime,
     ExecutionMemory,
     Parameters,
-    Model
+    Model,
+    slice_layers_2_fit_gpu
 )
 from .constants import ACTIVATION_SAFETY_FACTOR, TOTAL_SAFETY_FACTOR
 
