@@ -69,7 +69,7 @@ class ModelLayerProfile:
         activation_sizes = {}
         hooks = []
 
-        def hook_fn(name: str):
+        def hook_fn(parent_name: str):
             def _hook(module: torch.nn.Module, inputs: Any, output: Any) -> None:
                 if output is not None:
                     if isinstance(output, (tuple, list)):
@@ -77,14 +77,20 @@ class ModelLayerProfile:
                                  for t in output if isinstance(t, torch.Tensor))
                     else:
                         size = output.element_size() * output.numel()
-                    activation_sizes[name] = activation_sizes.get(name, 0) + size
+                    activation_sizes[parent_name] = activation_sizes.get(parent_name, 0) + size
             return _hook
 
         try:
-            # Register hooks
-            for name, module in self.model.named_modules():
+            # Register hooks for all submodules within each layer
+            for name, layer in self.model.named_modules():
                 if name in self.layer_names:
-                    hooks.append(module.register_forward_hook(hook_fn(name)))
+                    if len(list(layer.children())) > 0:
+                        # For parent layers, hook all children
+                        for submodule in layer.modules():
+                            hooks.append(submodule.register_forward_hook(hook_fn(name)))
+                    else:
+                        # For leaf modules, just hook the module itself
+                        hooks.append(layer.register_forward_hook(hook_fn(name)))
 
             # Forward pass
             with torch.no_grad():

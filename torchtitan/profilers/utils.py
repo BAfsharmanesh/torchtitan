@@ -275,75 +275,78 @@ def match_list_to_full_model(
     return result, avg_value
 
 
-def slice_layers_2_fit_gpu(act_weight_profiled, gpu_memory, tp_degree):
-    # print(f"GPU Memory: {gpu_memory}")
-    parameters_per_layer_bytes = act_weight_profiled["parameters_per_layer_bytes"]
-    activation_parameters_bytes = act_weight_profiled["activation_parameters_bytes"]
-
-    assert len(parameters_per_layer_bytes) == len(
-        activation_parameters_bytes
-    ), "Number of layers mismatch"
-    number_of_layers = len(parameters_per_layer_bytes)
-
-    # predict memory usage for each layer
-    def _memory_usage_precidtions(weight, act, model_name):
-        return TOTAL_SAFETY_FACTOR[model_name]*(ACTIVATION_SAFETY_FACTOR[model_name]*act + weight * 4)/tp_degree
-
-
-    model_name = act_weight_profiled['model_name']
-    model_name = "_".join(model_name.split('_')[:-1])
-    # calculate size of each layer
-    layer_size_tmp = []
-    for i in range(number_of_layers):
-        layer_size_tmp.append(
-            _memory_usage_precidtions(
-                parameters_per_layer_bytes[i], activation_parameters_bytes[i], model_name
-            )/1024/1024/1024
-        )
-    # print(f"{layer_size_tmp=}")
+def slice_layers_2_fit_gpu(act_weight_profiled: Dict[str, Any], 
+                          gpu_memory: float, 
+                          tp_degree: int) -> Tuple[List[List[int]], List[float]]:
+    """Slice model layers to fit in GPU memory.
     
-
-    # start from layer 0, append layers until memory is full, then start a new slice
-    model_slices = []
+    Args:
+        act_weight_profiled: Dictionary with layer parameters and activations
+        gpu_memory: Available GPU memory in bytes
+        tp_degree: Tensor parallel degree
+        
+    Returns:
+        Tuple of (layer_slices, memory_per_slice)
+    """
+    parameters_per_layer = act_weight_profiled["parameters_per_layer_bytes"]
+    activation_parameters = act_weight_profiled["activation_parameters_bytes"]
+    
+    assert len(parameters_per_layer) == len(activation_parameters), "Layer count mismatch"
+    
+    def _predict_memory_usage(weight: int, act: int, model_name: str) -> float:
+        return TOTAL_SAFETY_FACTOR[model_name] * (
+            ACTIVATION_SAFETY_FACTOR[model_name] * act + weight * 4
+        ) / tp_degree
+    
+    model_name = "_".join(act_weight_profiled["model_name"].split("_")[:-1])
+    
+    # Calculate slices and their memory usage
+    slices = []
+    slice_memory = []
     current_slice = []
-    current_slice_params = 0
-    current_slice_activation = 0
-    for i in range(number_of_layers):
-        current_slice_params += parameters_per_layer_bytes[i]
-        current_slice_activation += activation_parameters_bytes[i]
-        if (
-            _memory_usage_precidtions(current_slice_params, current_slice_activation, model_name)
-            < gpu_memory
-        ):
+    current_params = 0
+    current_acts = 0
+    
+    for i in range(len(parameters_per_layer)):
+        current_params += parameters_per_layer[i]
+        current_acts += activation_parameters[i]
+        
+        memory_usage = _predict_memory_usage(current_params, current_acts, model_name)
+        
+        if memory_usage < gpu_memory:
             current_slice.append(i)
         else:
-            assert len(current_slice) != 0, "Some layers are too big"
-            model_slices.append(current_slice)
-            current_slice = []
-            current_slice_params = parameters_per_layer_bytes[i]
-            current_slice_activation = activation_parameters_bytes[i]
-            current_slice.append(i)
-
-    if current_slice:
-        model_slices.append(current_slice)
-
-    # check if all layers are included, and all slices are fit in the GPU memory
-    assert (
-        sum([len(slice) for slice in model_slices]) == number_of_layers
-    ), "Some layers are missing"
-    
-    model_slice_memory = []
-    for ii, slice in enumerate(model_slices):
-        memory_slice_usage = _memory_usage_precidtions(
-                sum([parameters_per_layer_bytes[i] for i in slice]),
-                sum([activation_parameters_bytes[i] for i in slice]),
-                model_name,
+            if not current_slice:
+                raise ValueError("Layer too large to fit in memory")
+            
+            # Calculate memory for completed slice
+            slice_memory.append(
+                _predict_memory_usage(
+                    sum(parameters_per_layer[j] for j in current_slice),
+                    sum(activation_parameters[j] for j in current_slice),
+                    model_name
+                ) / (1024 * 1024 * 1024)  # Convert to GB
             )
-        # print(f"Slice {ii} memory usage: {memory_slice_usage/1024/1024/1024:.2f}GiB")
-        model_slice_memory.append(memory_slice_usage/1024/1024/1024)
-        assert (
-            memory_slice_usage
-            <= gpu_memory
-        ), f"The slice {i} is too big"
+            
+            slices.append(current_slice)
+            current_slice = [i]
+            current_params = parameters_per_layer[i]
+            current_acts = activation_parameters[i]
 
-    return model_slices, model_slice_memory 
+    # Handle final slice
+    if current_slice:
+        slices.append(current_slice)
+        slice_memory.append(
+            _predict_memory_usage(
+                sum(parameters_per_layer[j] for j in current_slice),
+                sum(activation_parameters[j] for j in current_slice),
+                model_name
+            ) / (1024 * 1024 * 1024)
+        )
+
+    # Validate slices
+    total_layers = sum(len(s) for s in slices)
+    assert total_layers == len(parameters_per_layer), "Some layers are missing"
+    assert all(m <= gpu_memory/(1024*1024*1024) for m in slice_memory), "Slice too large"
+
+    return slices, slice_memory 
