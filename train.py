@@ -289,7 +289,7 @@ def main(job_config: JobConfig):
 
         model_parts = [model]
 
-    total_layers_name = get_layer_names(model_parts[0], return_filtered=False)
+    total_layers_name = get_layer_names(model_parts[0])
     print(f"{total_layers_name=}")
 
     activation_size = []
