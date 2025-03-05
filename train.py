@@ -36,7 +36,7 @@ from torchtitan.time_mem_profile import (
     save_metis_object,
     measure_activation_shape,
 )
-
+from torchtitan.time_mem_utils import slice_layers_2_fit_gpu, get_dummy_input
 
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
 @record
@@ -63,6 +63,81 @@ def main(job_config: JobConfig):
 
     # init distributed
     world_size = int(os.environ["WORLD_SIZE"])
+
+    device = torch.device(f"cuda:{int(os.environ['LOCAL_RANK'])}")
+    torch.cuda.set_device(device)
+    # utils.init_distributed(job_config)
+    # initialize GPU memory monitor and get peak flops for MFU calculation
+    gpu_memory_monitor = build_gpu_memory_monitor()
+    gpu_peak_flops = utils.get_peak_flops(gpu_memory_monitor.device_name)
+    logger.info(f"Peak FLOPS used for computing MFU: {gpu_peak_flops:.3e}")
+
+    model_name = job_config.model.name
+
+
+    # build model (using meta init)
+    model_cls = model_name_to_cls[model_name]
+    model_config = models_config[model_name][job_config.model.flavor]
+
+
+    # config the model
+    if job_config.model.name == "llama2":
+        # build tokenizer
+        tokenizer_type = model_name_to_tokenizer[model_name]
+        tokenizer = build_tokenizer(tokenizer_type, job_config.model.tokenizer_path)        
+        # set the model configs from training inputs:
+        # 1. norm type to decide which norm layer to use
+        # 2. vocab size from tokenizer
+        # 3. max_seq_len base on inputs
+        model_config.norm_type = job_config.model.norm_type
+        model_config.vocab_size = tokenizer.n_words
+        model_config.max_seq_len = job_config.training.seq_len    
+
+    logger.info(f"Building {model_name} {job_config.model.flavor} with {model_config}")
+    with torch.device("meta"):
+        model = model_cls.from_model_args(model_config)
+    
+    # get activation size and weight size
+    dummy_input = get_dummy_input(job_config, model_config)
+    total_layers_name = get_layer_names(model, return_filtered=False)
+    print(f"{total_layers_name=}")
+    model_layer_profile = get_param_act_info(
+        model_name + "_" + job_config.model.flavor,
+        model,
+        total_layers_name,
+        dummy_input=dummy_input,
+    )
+
+    print(f"{model_layer_profile=}")
+    
+    activation_size_name = [
+        (act_size, layer_name)
+        for act_size, layer_name in zip(
+            model_layer_profile["activation_parameters_bytes"], total_layers_name
+        )
+    ]
+
+    # slice layers to fit GPU, and return split points
+    if job_config.profiling.metis_profiling:
+        layers_slices, slices_mem_usage = slice_layers_2_fit_gpu(
+            act_weight_profiled=model_layer_profile,
+            gpu_memory=gpu_memory_monitor.device_capacity,
+            tp_degree=job_config.training.tensor_parallel_degree,
+        )
+        
+        split_points = [total_layers_name[Slice_layers[0]] for Slice_idx, (Slice_layers, _) in enumerate(
+            zip(layers_slices, slices_mem_usage)) if Slice_idx != 0]
+        
+        for Slice_idx, (Slice_layers, Slice_Memory_Usage) in enumerate(
+            zip(layers_slices, slices_mem_usage)
+        ):
+            print(f"{Slice_idx=}, {Slice_layers=}, {Slice_Memory_Usage=:.2f}GiB")  
+
+        return split_points
+    
+    # build meshes
+    utils.init_distributed(job_config)    
+    
     parallel_dims = ParallelDims(
         dp_shard=job_config.training.data_parallel_shard_degree,
         dp_replicate=job_config.training.data_parallel_replicate_degree,
@@ -71,17 +146,9 @@ def main(job_config: JobConfig):
         pp=job_config.experimental.pipeline_parallel_degree,
         world_size=world_size,
         enable_loss_parallel=job_config.training.enable_loss_parallel,
-    )
-    device = torch.device(f"cuda:{int(os.environ['LOCAL_RANK'])}")
-    torch.cuda.set_device(device)
-    utils.init_distributed(job_config)
-    # initialize GPU memory monitor and get peak flops for MFU calculation
-    gpu_memory_monitor = build_gpu_memory_monitor()
-    gpu_peak_flops = utils.get_peak_flops(gpu_memory_monitor.device_name)
-    logger.info(f"Peak FLOPS used for computing MFU: {gpu_peak_flops:.3e}")
-
-    # build meshes
+    )    
     world_mesh = parallel_dims.build_mesh(device_type="cuda")
+    assert not parallel_dims.dp_enabled, "Data Parallel is not required for profiling"
     if parallel_dims.dp_enabled:
         dp_mesh = world_mesh["dp"]
         dp_degree, dp_rank = dp_mesh.size(), dp_mesh.get_local_rank()
@@ -91,16 +158,8 @@ def main(job_config: JobConfig):
     if parallel_dims.pp_enabled:
         pp_mesh = world_mesh["pp"]
 
-    model_name = job_config.model.name
-
-    # build model (using meta init)
-    model_cls = model_name_to_cls[model_name]
-    model_config = models_config[model_name][job_config.model.flavor]
-
+    # build data loader
     if job_config.model.name == "llama2":
-        # build tokenizer
-        tokenizer_type = model_name_to_tokenizer[model_name]
-        tokenizer = build_tokenizer(tokenizer_type, job_config.model.tokenizer_path)
         # build dataloader
         data_loader = build_hf_data_loader(
             job_config.training.dataset,
@@ -145,18 +204,6 @@ def main(job_config: JobConfig):
         ]
         data_loader = iter(data_list)
 
-    if job_config.model.name == "llama2":
-        # set the model configs from training inputs:
-        # 1. norm type to decide which norm layer to use
-        # 2. vocab size from tokenizer
-        # 3. max_seq_len base on inputs
-        model_config.norm_type = job_config.model.norm_type
-        model_config.vocab_size = tokenizer.n_words
-        model_config.max_seq_len = job_config.training.seq_len
-
-    logger.info(f"Building {model_name} {job_config.model.flavor} with {model_config}")
-    with torch.device("meta"):
-        model = model_cls.from_model_args(model_config)
 
     # a no-op hander if float8 is not enabled
     float8_handler = Float8Handler(job_config, parallel_dims)
@@ -209,58 +256,6 @@ def main(job_config: JobConfig):
         def loss_fn(pred, labels):
             return torch.nn.functional.cross_entropy(pred, labels)    
     
-
-    def get_dummy_input(config, model_config):
-        # Prepare a dummy input based on the specified input size
-        if config.model.name == "llama2":
-            dummy_input = torch.randint(
-                0,
-                model_config.vocab_size,
-                (job_config.training.batch_size, job_config.training.seq_len),
-                device="meta",
-                dtype=torch.long,
-            )
-        elif config.model.name == "moe":
-            batch_input_size = (
-                job_config.training.batch_size,
-                job_config.training.seq_len,
-                model_config.dim,
-            )
-            dummy_input = torch.empty(
-                *batch_input_size, device="meta", dtype=torch.float32
-            )
-
-        elif config.model.name == "wideresnet":
-            batch_input_size = (
-                job_config.training.batch_size,
-                model_config.input_channels,
-                model_config.input_size,
-                model_config.input_size,
-            )
-            dummy_input = torch.empty(
-                *batch_input_size, device="meta", dtype=torch.float32
-            )
-        else:
-            raise ValueError(f"Unsupported model name: {config.model.name}")
-        return dummy_input
-
-    dummy_input = get_dummy_input(config, model_config)
-    total_layers_name = get_layer_names(model, return_filtered=False)
-    print(f"{total_layers_name=}")
-    model_layer_profile = get_param_act_info(
-        model_name + "_" + job_config.model.flavor,
-        model,
-        total_layers_name,
-        dummy_input=dummy_input,
-    )
-
-    print(f"{model_layer_profile=}")
-    activation_size_name = [
-        (act_size, layer_name)
-        for act_size, layer_name in zip(
-            model_layer_profile["activation_parameters_bytes"], total_layers_name
-        )
-    ]
 
     if job_config.training.compile:
         loss_fn = torch.compile(loss_fn)

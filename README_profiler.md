@@ -5,10 +5,21 @@
 Run unittest
 
 `
+python -m unittest ./test_profiler/test_time_mem_profile.py
+`
+
+
+# run all tests
+`
 python -m unittest discover -s test_profiler -p "*.py"
 `
 
 # single model run
+
+`
+python ./test_profiler/integration_test.py
+`
+
 
 runing command to log to a file and run in background
 
