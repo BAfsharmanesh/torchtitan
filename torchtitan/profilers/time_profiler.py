@@ -5,66 +5,59 @@ from typing import Dict, List, Any, Optional, Callable
 import torch
 from .base_profiler import BaseProfiler
 
-class TimeProfiler(BaseProfiler):
-    """Profiles execution time of model layers during forward and backward passes."""
+class LayerTimeProfiler(BaseProfiler):
+    """Profiles execution time of model layers."""
     
     def __init__(self, layer_names: Optional[List[str]] = None):
         """Initialize the time profiler.
         
         Args:
-            layer_names: List of layer names to profile. If None, all layers will be profiled.
+            layer_names: List of layer names to profile
         """
         super().__init__(layer_names)
-        self.timings: Dict[str, List[float]] = {}
+        self.reset()
         
-    def register_hooks(self, model: torch.nn.Module, callback: Optional[Callable] = None) -> None:
-        """Register timing hooks on model layers.
-        
-        Args:
-            model: PyTorch model to profile
-            callback: Optional callback function to execute after timing
-        """
-        def start_time(layer_name: str, pass_type: str) -> Callable:
-            def hook(module: torch.nn.Module, input: Any) -> None:
-                torch.cuda.synchronize()
-                self.timings.setdefault(f"{layer_name}_{pass_type}_start", []).append(time.time())
-                if callback:
-                    callback()
-            return hook
-
-        def end_time(layer_name: str, pass_type: str) -> Callable:
-            def hook(module: torch.nn.Module, input: Any, output: Any) -> None:
-                torch.cuda.synchronize()
-                self.timings.setdefault(f"{layer_name}_{pass_type}_end", []).append(time.time())
-                if callback:
-                    callback()
-            return hook
-
-        # Register hooks only for specified layers
-        for name, layer in model.named_modules():
-            if name in self.layer_names:
-                if name in self._hooks:
-                    self.remove_hooks()
-                
-                hooks = [
-                    layer.register_forward_pre_hook(start_time(name, "forward")),
-                    layer.register_forward_hook(end_time(name, "forward")),
-                    layer.register_full_backward_pre_hook(start_time(name, "backward")),
-                    layer.register_full_backward_hook(end_time(name, "backward"))
-                ]
-                self._hooks[name] = hooks
-
     def reset(self) -> None:
         """Reset all timing measurements."""
-        self.timings.clear()
-
-    def get_metrics(self) -> Dict[str, List[float]]:
-        """Get raw timing measurements.
+        self.layer_times = {ln: [] for ln in self.layer_names}
+        self.total_forward_time = []
+        self.total_backward_time = []
         
-        Returns:
-            Dictionary mapping layer names to lists of timing measurements
-        """
-        return dict(self.timings)
+    def register_hooks(self, model: torch.nn.Module) -> None:
+        """Register timing hooks on model layers."""
+        for name, module in model.named_modules():
+            if name in self.layer_names:
+                forward_hook = module.register_forward_hook(self._forward_hook(name))
+                backward_hook = module.register_backward_hook(self._backward_hook(name))
+                self._hooks[name] = [forward_hook, backward_hook]
+                
+    def remove_hooks(self) -> None:
+        """Remove all registered timing hooks."""
+        super().remove_hooks()
+        
+    def _forward_hook(self, name: str):
+        def hook(module, input, output):
+            start_time = time.perf_counter()
+            self.layer_times[name].append(("forward", start_time))
+        return hook
+        
+    def _backward_hook(self, name: str):
+        def hook(module, grad_input, grad_output):
+            end_time = time.perf_counter()
+            self.layer_times[name].append(("backward", end_time))
+        return hook
+        
+    def get_metrics(self) -> Dict[str, Any]:
+        """Get the timing metrics for all layers."""
+        metrics = {}
+        for name, times in self.layer_times.items():
+            forward_times = [t[1] for t in times if t[0] == "forward"]
+            backward_times = [t[1] for t in times if t[0] == "backward"]
+            metrics[name] = {
+                "forward_time": sum(forward_times) / len(forward_times) if forward_times else 0,
+                "backward_time": sum(backward_times) / len(backward_times) if backward_times else 0
+            }
+        return metrics
 
     def get_duration_timings(self) -> Dict[str, List[float]]:
         """Calculate duration between start and end timings.
@@ -73,12 +66,12 @@ class TimeProfiler(BaseProfiler):
             Dictionary mapping layer names to lists of durations in milliseconds
         """
         duration_timings = {}
-        for key, value in self.timings.items():
-            if key.endswith("end"):
-                start_key = key.replace("end", "start")
-                duration_timings[key.replace("_end", "")] = [
-                    (value[i] - self.timings[start_key][i]) * 1000 
-                    for i in range(len(value))
+        for key, value in self.layer_times.items():
+            forward_times = [t[1] for t in value if t[0] == "forward"]
+            backward_times = [t[1] for t in value if t[0] == "backward"]
+            if forward_times and backward_times:
+                duration_timings[key] = [
+                    (backward_times[i] - forward_times[i]) * 1000 for i in range(len(forward_times))
                 ]
         return duration_timings
 
@@ -90,16 +83,16 @@ class TimeProfiler(BaseProfiler):
             key: Name for this timing measurement
             sync: Whether to synchronize CUDA operations
         """
-        if key + "_start" not in self.timings:
-            self.timings[key + "_start"] = []
-            self.timings[key + "_end"] = []
+        if key + "_start" not in self.layer_times:
+            self.layer_times[key + "_start"] = []
+            self.layer_times[key + "_end"] = []
         if sync:
             torch.cuda.synchronize()
-        self.timings[key + "_start"].append(time.time())
+        self.layer_times[key + "_start"].append(time.time())
         yield
         if sync:
             torch.cuda.synchronize()
-        self.timings[key + "_end"].append(time.time())
+        self.layer_times[key + "_end"].append(time.time())
 
     def record_time_tic(self, key: str, sync: bool = True):
         """Start timing measurement.
@@ -108,12 +101,12 @@ class TimeProfiler(BaseProfiler):
             key: Name for this timing measurement
             sync: Whether to synchronize CUDA operations
         """
-        if key + "_start" not in self.timings:
-            self.timings[key + "_start"] = []
-            self.timings[key + "_end"] = []
+        if key + "_start" not in self.layer_times:
+            self.layer_times[key + "_start"] = []
+            self.layer_times[key + "_end"] = []
         if sync:
             torch.cuda.synchronize()
-        self.timings[key + "_start"].append(time.time())
+        self.layer_times[key + "_start"].append(time.time())
 
     def record_time_toc(self, key: str, sync: bool = True):
         """End timing measurement.
@@ -122,7 +115,7 @@ class TimeProfiler(BaseProfiler):
             key: Name for this timing measurement
             sync: Whether to synchronize CUDA operations
         """
-        assert key + "_end" in self.timings, f"No matching start time found for {key}"
+        assert key + "_end" in self.layer_times, f"No matching start time found for {key}"
         if sync:
             torch.cuda.synchronize()
-        self.timings[key + "_end"].append(time.time()) 
+        self.layer_times[key + "_end"].append(time.time()) 
