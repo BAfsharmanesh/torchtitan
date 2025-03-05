@@ -32,6 +32,10 @@ class MemoryProfiler(BaseProfiler):
         """Memory profiler doesn't use hooks, memory is tracked explicitly."""
         pass
 
+    def remove_hooks(self) -> None:
+        """Memory profiler doesn't use hooks."""
+        pass
+
     def log_activation_memory_info(self, saved_tensor_mem_layer: List[float]) -> None:
         """Log activation memory usage for each layer.
         
@@ -133,24 +137,26 @@ class MemoryProfiler(BaseProfiler):
         self.max_reserved_gib.append(max_reserved_gib)
 
     def get_metrics(self) -> Dict[str, Any]:
-        """Get all memory usage metrics.
+        """Get the memory usage metrics for all layers."""
+        metrics = {}
+        for name in self.layer_names:
+            metrics[name] = {
+                "activation": sum(self.activation_memory_usage[name]) / len(self.activation_memory_usage[name]) if self.activation_memory_usage[name] else 0,
+                "weights": sum(self.weight_memory_usage[name]) / len(self.weight_memory_usage[name]) if self.weight_memory_usage[name] else 0,
+                "gradients": sum(self.grad_memory_usage[name]) / len(self.grad_memory_usage[name]) if self.grad_memory_usage[name] else 0,
+                "optimizer": sum(self.optimizer_memory_usage[name]) / len(self.optimizer_memory_usage[name]) if self.optimizer_memory_usage[name] else 0
+            }
         
-        Returns:
-            Dictionary containing all memory metrics
-        """
-        return {
-            "activation": self.activation_memory_usage,
-            "weight": self.weight_memory_usage,
-            "grad": self.grad_memory_usage,
-            "optimizer": self.optimizer_memory_usage,
-            "total": {
-                "weight": self.total_weight_mem_size,
-                "grad": self.total_grad_mem_size,
-                "optimizer": self.total_optimizer_mem_size,
-                "activation": self.total_activation_mem_size,
-                "total_memory": [i * 1024 for i in self.max_reserved_gib],
-            },
+        # Add totals
+        metrics["total"] = {
+            "activation": sum(self.total_activation_mem_size) / len(self.total_activation_mem_size) if self.total_activation_mem_size else 0,
+            "weights": sum(self.total_weight_mem_size) / len(self.total_weight_mem_size) if self.total_weight_mem_size else 0,
+            "gradients": sum(self.total_grad_mem_size) / len(self.total_grad_mem_size) if self.total_grad_mem_size else 0,
+            "optimizer": sum(self.total_optimizer_mem_size) / len(self.total_optimizer_mem_size) if self.total_optimizer_mem_size else 0,
+            "max_reserved_gib": max(self.max_reserved_gib) if self.max_reserved_gib else 0
         }
+        
+        return metrics
 
     @staticmethod
     def _get_storage_id(tensor: torch.Tensor) -> int:
