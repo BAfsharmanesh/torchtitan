@@ -100,7 +100,7 @@ def main(job_config: JobConfig):
     
     # get activation size and weight size
     dummy_input = get_dummy_input(job_config, model_config)
-    total_layers_name = get_layer_names(model, return_filtered=False)
+    total_layers_name = get_layer_names(model)
     print(f"{total_layers_name=}")
     model_layer_profile = get_param_act_info(
         model_name + "_" + job_config.model.flavor,

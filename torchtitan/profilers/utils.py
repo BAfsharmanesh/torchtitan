@@ -287,7 +287,7 @@ def slice_layers_2_fit_gpu(act_weight_profiled, gpu_memory, tp_degree):
 
     # predict memory usage for each layer
     def _memory_usage_precidtions(weight, act, model_name):
-        return TOTAL_SAFTEY_FACTOR[model_name]*(ACTIVATION_SAFTEY_FACTOR[model_name]*act + weight * 4)/tp_degree
+        return TOTAL_SAFETY_FACTOR[model_name]*(ACTIVATION_SAFETY_FACTOR[model_name]*act + weight * 4)/tp_degree
 
 
     model_name = act_weight_profiled['model_name']
