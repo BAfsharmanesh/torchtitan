@@ -12,39 +12,31 @@ def get_layer_names(model: torch.nn.Module) -> List[str]:
     Returns:
         List of layer names in forward pass order
     """
-    return [name for name, _ in model.named_modules()]
+    names = []
+    for name, child in model.named_children():
+        if name == "layers":
+            for name_2, child_2 in child.named_children():
+                names.append(name + "." + name_2)
+            continue
+        # print name of the layer
+        names.append(name)
+
+    return names
 
 def get_param_act_info(
+    model_name: str,
     model: torch.nn.Module,
-    dummy_input: torch.Tensor,
-    layer_names: List[str]
+    layer_names: List[str],
+    dummy_input: torch.Tensor
 ) -> Dict[str, Any]:
-    """Get parameter and activation information for model layers.
-    
-    Args:
-        model: PyTorch model to inspect
-        dummy_input: Sample input tensor
-        layer_names: List of layer names to analyze
-        
-    Returns:
-        Dictionary containing layer parameter and activation sizes
-    """
-    # Get parameter sizes
-    parameters_per_layer_bytes = []
-    for name in layer_names:
-        module = dict(model.named_modules())[name]
-        param_size = sum(p.nelement() * p.element_size() for p in module.parameters())
-        parameters_per_layer_bytes.append(param_size)
-        
-    # Get activation sizes using meta device
-    model_profiler = ModelLayerProfile(model, layer_names)
-    activation_info = model_profiler.get_activation_parameters_per_layer(dummy_input)
-    activation_parameters_bytes = [size for _, size in activation_info]
+    """Get parameter and activation information for model layers."""
+    profiler = ModelLayerProfile(model, layer_names=layer_names)
+    layer_profiles = profiler.get_layer_profiles(dummy_input)
     
     return {
-        "model_name": model.__class__.__name__,
-        "number_of_layers": len(layer_names),
-        "parameters_per_layer_bytes": parameters_per_layer_bytes,
-        "activation_parameters_bytes": activation_parameters_bytes,
-        "total_parameters_bytes": sum(parameters_per_layer_bytes)
+        "model_name": model_name,
+        "number_of_layers": len(layer_profiles),
+        "total_parameters_bytes": sum(p.parameter_size for p in layer_profiles),
+        "parameters_per_layer_bytes": [p.parameter_size for p in layer_profiles],
+        "activation_parameters_bytes": [p.activation_size for p in layer_profiles]
     } 

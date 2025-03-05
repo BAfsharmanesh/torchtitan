@@ -1,6 +1,12 @@
-from typing import List, Dict, Tuple, Any, Optional
+from typing import List, Dict, Tuple, Any, Optional, NamedTuple
 import torch
 from .constants import ACTIVATION_SAFETY_FACTOR, TOTAL_SAFETY_FACTOR
+
+class LayerInfo(NamedTuple):
+    """Information about a model layer."""
+    name: str
+    parameter_size: int
+    activation_size: Optional[int] = None
 
 class ModelLayerProfile:
     """Profiles model architecture and layer characteristics."""
@@ -12,50 +18,98 @@ class ModelLayerProfile:
             model: PyTorch model to profile
             layer_names: Optional list of layer names to profile
         """
-        self.model = model
-        self.layer_names = layer_names or []
-        self._activation_sizes: List[Tuple[str, int]] = []
+        self.model = model.to("meta")
+        self.layer_names = layer_names or self._get_default_layer_names()
         
-    def get_activation_parameters_per_layer(self, dummy_input: torch.Tensor) -> List[Tuple[str, int]]:
-        """Calculate activation sizes for each layer during forward pass.
+    def _get_default_layer_names(self) -> List[str]:
+        """Get default list of layer names to profile."""
+        return [name for name, _ in self.model.named_modules()]
+        
+    def _get_layer_info(self, include_activations: bool = False, 
+                       dummy_input: Optional[torch.Tensor] = None) -> Dict[str, LayerInfo]:
+        """Get parameter and activation info for all layers.
         
         Args:
-            dummy_input: Sample input tensor
+            include_activations: Whether to collect activation sizes
+            dummy_input: Required if include_activations is True
             
         Returns:
-            List of (layer_name, activation_size) tuples
+            Dictionary mapping layer names to their info
         """
+        layer_info = {}
+        
+        # Get parameter sizes
+        for name, layer in self.model.named_modules():
+            if name in self.layer_names:
+                param_size = sum(p.element_size() * p.numel() for p in layer.parameters())
+                layer_info[name] = LayerInfo(name=name, parameter_size=param_size)
+                
+        # Get activation sizes if requested
+        if include_activations:
+            if dummy_input is None:
+                raise ValueError("dummy_input required to profile activations")
+                
+            activation_sizes = self._profile_activations(dummy_input)
+            
+            # Update existing LayerInfo objects with activation sizes
+            for name, act_size in activation_sizes.items():
+                if name in layer_info:
+                    info = layer_info[name]
+                    layer_info[name] = LayerInfo(
+                        name=info.name,
+                        parameter_size=info.parameter_size,
+                        activation_size=act_size
+                    )
+                    
+        return layer_info
+        
+    def _profile_activations(self, dummy_input: torch.Tensor) -> Dict[str, int]:
+        """Profile activation sizes for all layers."""
         dummy_input = dummy_input.clone().to("meta")
+        activation_sizes = {}
         hooks = []
-        activation_parameters_bytes = []
 
         def hook_fn(name: str):
-            def _hook(module: torch.nn.Module, input: Any, output: Any) -> None:
-                if isinstance(output, (tuple, list)):
-                    total_size = sum(t.nelement() * t.element_size() for t in output if isinstance(t, torch.Tensor))
-                else:
-                    total_size = output.nelement() * output.element_size()
-                activation_parameters_bytes.append((name, total_size))
+            def _hook(module: torch.nn.Module, inputs: Any, output: Any) -> None:
+                if output is not None:
+                    if isinstance(output, (tuple, list)):
+                        size = sum(t.element_size() * t.numel() 
+                                 for t in output if isinstance(t, torch.Tensor))
+                    else:
+                        size = output.element_size() * output.numel()
+                    activation_sizes[name] = activation_sizes.get(name, 0) + size
             return _hook
 
-        # Register hooks for all named modules
-        for name, module in self.model.named_modules():
-            if not self.layer_names or name in self.layer_names:
-                hooks.append(module.register_forward_hook(hook_fn(name)))
-
-        # Forward pass to trigger hooks
         try:
-            self.model(dummy_input)
+            # Register hooks
+            for name, module in self.model.named_modules():
+                if name in self.layer_names:
+                    hooks.append(module.register_forward_hook(hook_fn(name)))
+
+            # Forward pass
+            with torch.no_grad():
+                self.model(dummy_input)
+                
         finally:
             for hook in hooks:
                 hook.remove()
+                
+        return activation_sizes
 
-        # Aggregate activation sizes
-        activation_dict = {}
-        for name, size in activation_parameters_bytes:
-            activation_dict[name] = activation_dict.get(name, 0) + size
-
-        return list(activation_dict.items())
+    def get_layer_profiles(self, dummy_input: Optional[torch.Tensor] = None) -> List[LayerInfo]:
+        """Get profiling information for all requested layers.
+        
+        Args:
+            dummy_input: Optional tensor for activation profiling
+            
+        Returns:
+            List of LayerInfo objects in layer_names order
+        """
+        include_activations = dummy_input is not None
+        layer_info = self._get_layer_info(include_activations, dummy_input)
+        
+        # Return info in requested order
+        return [layer_info[name] for name in self.layer_names if name in layer_info]
 
 def slice_layers_2_fit_gpu(
     act_weight_profiled: Dict[str, Any], 
