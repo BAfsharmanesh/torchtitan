@@ -18,6 +18,8 @@ python -m unittest discover -s test_profiler -p "*.py"
 
 `
 python ./test_profiler/integration_test.py
+
+python -m test_profiler.integration_test
 `
 
 
