@@ -35,9 +35,9 @@ class TestLayerTimeProfiler(unittest.TestCase):
             0,
         )
 
-    def test_reset_timings(self):
+    def test_reset_metrics(self):
         self.profiler.timings["test"] = [1, 2, 3]
-        self.profiler.reset_timings()
+        self.profiler.reset_metrics()
         self.assertEqual(self.profiler.timings, {})
 
     def test_get_duration_timings(self):
@@ -49,12 +49,12 @@ class TestLayerTimeProfiler(unittest.TestCase):
         self.assertIn("layer1_forward", duration_timings)
         self.assertEqual(len(duration_timings["layer1_forward"]), 2)
 
-    def test_get_average_timings(self):
+    def test_get_average_metrics(self):
         self.profiler.timings = {
             "layer1_forward_start": [0.1, 0.2, 0.3],
             "layer1_forward_end": [0.4, 0.5, 0.6],
         }
-        avg_timings = self.profiler.get_average_timings(1, 2, ["layer1"])
+        avg_timings = self.profiler.get_average_metrics(1, 2, ["layer1"])
         self.assertIn("layer1_forward", avg_timings)
         self.assertGreater(avg_timings["layer1_forward"], 0)
 

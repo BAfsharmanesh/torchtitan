@@ -1,5 +1,6 @@
 from typing import List
 
+
 class BaseProfiler:
     def __init__(self, layer_names: List[str] = None):
         """Base profiler class for time and memory profiling
@@ -26,7 +27,9 @@ class BaseProfiler:
         """Reset all metrics to initial state"""
         pass
 
-    def _validate_layer_names(self, recorded_layer_names: List[str], layers_name: List[str]):
+    def _validate_layer_names(
+        self, recorded_layer_names: List[str], layers_name: List[str]
+    ):
         """Validate that all requested layers exist in recorded layers
 
         Args:
@@ -37,4 +40,6 @@ class BaseProfiler:
             AssertionError: If a requested layer is not found in recorded layers
         """
         for ln in layers_name:
-            assert ln in recorded_layer_names, f"Layer {ln} not found in the model layers {recorded_layer_names}"
+            assert (
+                ln in recorded_layer_names
+            ), f"Layer {ln} not found in the model layers {recorded_layer_names}"

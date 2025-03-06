@@ -15,7 +15,6 @@ class TimeProfiler(BaseProfiler):
             layer_names (List[str], optional): list of layer names to profile. Defaults to None.
         """
         super().__init__(layer_names)
-        # self.hook_layers = layer_names
 
         self.timings = {}
         self.memory_usage = {}
@@ -32,7 +31,7 @@ class TimeProfiler(BaseProfiler):
     def get_memory_usage(self):
         return self.memory_usage
 
-    def reset_timings(self):
+    def reset_metrics(self):
         self.timings = {}
 
     def reset_memory_usage(self):
@@ -49,7 +48,7 @@ class TimeProfiler(BaseProfiler):
                 ]
         return duration_timings
 
-    def get_average_timings(self, warm, active, layers_name):
+    def get_average_metrics(self, warm, active, layers_name):
         assert active > 0, "Active steps should be greater than 0"
 
         duration_timings = self.get_duration_timings()
@@ -76,10 +75,10 @@ class TimeProfiler(BaseProfiler):
 
         recorded_layer_names = [i[0] for i in layer_compute_total_ms_dict]
         avg_timings["layer_compute_total_ms"] = []
+        
+        self._validate_layer_names(recorded_layer_names, layers_name)
+        
         for ln in layers_name:
-            assert (
-                ln in recorded_layer_names
-            ), f"Layer {ln} not found in the model layers {recorded_layer_names}"
             avg_timings["layer_compute_total_ms"].append(
                 layer_compute_total_ms_dict[recorded_layer_names.index(ln)][1]
             )

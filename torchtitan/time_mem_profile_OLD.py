@@ -29,7 +29,7 @@ class LayerTimeProfiler:
     def get_memory_usage(self):
         return self.memory_usage
 
-    def reset_timings(self):
+    def reset_metrics(self):
         self.timings = {}
 
     def reset_memory_usage(self):
@@ -46,7 +46,7 @@ class LayerTimeProfiler:
                 ]
         return duration_timings
 
-    def get_average_timings(self, warm, active, layers_name):
+    def get_average_metrics(self, warm, active, layers_name):
         assert active > 0, "Active steps should be greater than 0"
 
         duration_timings = self.get_duration_timings()

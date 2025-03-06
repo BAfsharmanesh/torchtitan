@@ -627,7 +627,7 @@ def main(job_config: JobConfig):
     logger.info("Training completed")
     # logger.info(f"Timing information: {layer_time_profiler.get_duration_timings()}")
     # logger.info(
-    #     f"Timing information: {layer_time_profiler.get_average_timings(warm=3, active=3, layers_name = filter_layers_name)}"
+    #     f"Timing information: {layer_time_profiler.get_average_metrics(warm=3, active=3, layers_name = filter_layers_name)}"
     # )
     # logger.info(f"Memory information: {layer_memory_profiler.get_memory_usage()}")
     # logger.info(
@@ -641,7 +641,7 @@ def main(job_config: JobConfig):
         number_of_layers = model_config.n_layers
 
     metis_input = save_metrics(
-        layer_time_profiler.get_average_timings(
+        layer_time_profiler.get_average_metrics(
             warm=3, active=7, layers_name=total_layers_name
         ),
         layer_memory_profiler.get_average_memory_usage(
