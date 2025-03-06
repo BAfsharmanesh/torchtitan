@@ -3,14 +3,7 @@ from torch import nn
 import torch
 from .model_profiler import ModelProfiler
 from dataclasses import dataclass
-
-@dataclass
-class ModelMemoryInfo:
-    model_name: str
-    number_of_layers: int
-    total_parameters_bytes: int
-    parameters_per_layer_bytes: List[int]
-    activation_parameters_bytes: List[int]
+from .types import ModelMemoryInfo
     
 def get_layer_names(model: nn.Module) -> List[str]:
     """Get names of all layers or just transformer layers

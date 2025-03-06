@@ -205,8 +205,8 @@ def get_dummy_input(config, model_config):
 
 def slice_layers_2_fit_gpu(act_weight_profiled, gpu_memory, tp_degree):
     # print(f"GPU Memory: {gpu_memory}")
-    parameters_per_layer_bytes = act_weight_profiled["parameters_per_layer_bytes"]
-    activation_parameters_bytes = act_weight_profiled["activation_parameters_bytes"]
+    parameters_per_layer_bytes = act_weight_profiled.parameters_per_layer_bytes
+    activation_parameters_bytes = act_weight_profiled.activation_parameters_bytes
 
     assert len(parameters_per_layer_bytes) == len(
         activation_parameters_bytes
@@ -218,7 +218,7 @@ def slice_layers_2_fit_gpu(act_weight_profiled, gpu_memory, tp_degree):
         return TOTAL_SAFETY_FACTOR[model_name]*(ACTIVATION_SAFETY_FACTOR[model_name]*act + weight * 4)/tp_degree
 
 
-    model_name = act_weight_profiled['model_name']
+    model_name = act_weight_profiled.model_name
     model_name = "_".join(model_name.split('_')[:-1])
     # calculate size of each layer
     layer_size_tmp = []

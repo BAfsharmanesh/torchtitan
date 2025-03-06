@@ -5,19 +5,18 @@ import torch
 from torch.optim import Optimizer
 
 from .base_profiler import BaseProfiler
+from .types import TensorMemoryInfo, MemoryUsageMetrics, LayerMemoryMetrics
 
-
-@dataclass
-class TensorMemoryInfo:
-    storage_id: int  # unique storage id of the tensor
-    layer_name: str  # name of the layer that the tensor belongs to
-    param_num: Optional[int] = None  # parameter index in model.parameters()
 
 
 class MemoryProfiler(BaseProfiler):
-    def __init__(self, layer_names: List[str] = None):
-        """Memory profiler for tracking layer-wise memory usage
-
+    """Profiles memory usage of model layers during execution.
+    
+    Tracks activation, weight, gradient and optimizer memory usage per layer.
+    """    
+    def __init__(self, layer_names: Optional[List[str]] = None):
+        """Initialize memory profiler
+        
         Args:
             layer_names: List of layer names to profile, sorted in forward pass order
         """
@@ -211,11 +210,11 @@ class MemoryProfiler(BaseProfiler):
             self.optimizer_memory_usage[layer].append(mem)
         self.total_optimizer_mem_size.append(total_optimizer_mem)
 
-    def get_memory_usage(self):
+    def get_memory_usage(self) -> MemoryUsageMetrics:
         """Get all memory usage metrics
-
+        
         Returns:
-            Dictionary containing all memory metrics
+            MemoryUsageMetrics containing all tracked memory information
         """
         return {
             "activation": self.activation_memory_usage,

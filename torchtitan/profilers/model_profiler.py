@@ -1,24 +1,41 @@
+from typing import List, Tuple, Dict, Optional
 import torch
-
+from torch import nn
 
 
 class ModelProfiler:
-    # get models in meta device, measure parameters and activations size per layer
-    def __init__(self, model, layer_names=None):
+    """Profiles model parameters and activation memory usage.
 
+    This profiler moves the model to meta device to analyze memory requirements
+    without actually allocating memory.
+    """
+
+    def __init__(self, model: nn.Module, layer_names: Optional[List[str]] = None):
+        """Initialize model profiler
+
+        Args:
+            model: PyTorch model to profile
+            layer_names: Optional list of layer names to profile. If None, profiles all layers.
+        """
         self.model = model.to("meta")
         self.layer_names = (
             layer_names if layer_names else [name for name, _ in model.named_modules()]
         )
 
-    def get_total_parameters(self):
-        # Calculate the total parameter size
-        total_parameters_bytes = sum(
-            p.element_size() * p.numel() for p in self.model.parameters()
-        )
-        return total_parameters_bytes
+    def get_total_parameters(self) -> int:
+        """Calculate total parameter memory in bytes
 
-    def get_parameters_per_layer(self) -> list:
+        Returns:
+            Total parameter size in bytes
+        """
+        return sum(p.element_size() * p.numel() for p in self.model.parameters())
+
+    def get_parameters_per_layer(self) -> List[Tuple[str, int]]:
+        """Calculate parameter memory per layer in bytes
+        
+        Returns:
+            List of tuples containing (layer_name, memory_bytes)
+        """        
         parameters_per_layer_bytes = []
         for name, layer in self.model.named_modules():
             if name in self.layer_names:
@@ -29,9 +46,16 @@ class ModelProfiler:
                 parameters_per_layer_bytes.append((name, total_params))
         return parameters_per_layer_bytes
 
-    def get_activation_parameters_per_layer(self, dummy_input) -> list:
-
-        # copy and move dummy_input to meta device
+    def get_activation_parameters_per_layer(self, dummy_input: torch.Tensor) -> List[Tuple[str, int]]:
+        """Calculate activation memory per layer in bytes
+        
+        Args:
+            dummy_input: Dummy input tensor to calculate activation sizes
+            
+        Returns:
+            List of tuples containing (layer_name, memory_bytes)
+        """
+        
         dummy_input = dummy_input.clone().to("meta")
 
         activation_parameters_bytes = []
@@ -66,8 +90,6 @@ class ModelProfiler:
                 else:
                     hook = layer.register_forward_hook(get_activation_hook(module_name))
                     hooks.append(hook)
-                # hook = layer.register_forward_hook(get_activation_hook(module_name))
-                # hooks.append(hook)
 
         # Forward pass with dummy input to calculate activation sizes
         with torch.no_grad():
