@@ -6,7 +6,7 @@ import weakref
 class SavedActivationContext:
     """Context manager for tracking activation memory during model execution."""
     
-    def __init__(self, layer_names: Optional[List[str]] = None, ignored_tensors: Optional[Iterable[torch.Tensor]] = None) -> None:
+    def __init__(self, ignored_tensors: Optional[Iterable[torch.Tensor]] = None) -> None:
         self._ignored_data_ptrs = (
             set() if ignored_tensors is None
             else {
@@ -17,7 +17,6 @@ class SavedActivationContext:
             }
         )
         
-        self.layer_names = layer_names
         self.saved_tensor_dict = torch.utils.weak.WeakTensorKeyDictionary()
         self.saved_tensor_list = WeakTensorList()
         self.layer_pos = [0]  # Initialize with first position
@@ -48,10 +47,9 @@ class SavedActivationContext:
             pack_hook, unpack_hook
         )
 
-    def take_layer_snapshot(self, layer_name: str) -> None:
+    def take_layer_pos(self) -> None:
         """Take a snapshot of tensor list length at current layer."""
-        if self.layer_names and layer_name in self.layer_names:
-            self.layer_pos.append(len(self.saved_tensor_list))
+        self.layer_pos.append(len(self.saved_tensor_list))
 
     def __enter__(self) -> "SavedActivationContext":
         self._saved_tensors_hook.__enter__()
