@@ -1,10 +1,26 @@
 from typing import List
-
+from torch import nn
+import torch
 from .model_profiler import ModelProfiler
+from dataclasses import dataclass
 
+@dataclass
+class ModelMemoryInfo:
+    model_name: str
+    number_of_layers: int
+    total_parameters_bytes: int
+    parameters_per_layer_bytes: List[int]
+    activation_parameters_bytes: List[int]
+    
+def get_layer_names(model: nn.Module) -> List[str]:
+    """Get names of all layers or just transformer layers
 
+    Args:
+        model: PyTorch model
 
-def get_layer_names(model, return_filtered=False):
+    Returns:
+        List of layer names
+    """
     names = []
     for name, child in model.named_children():
         if name == "layers":
@@ -14,14 +30,29 @@ def get_layer_names(model, return_filtered=False):
         # print name of the layer
         names.append(name)
 
-    if return_filtered:
-        return sorted([i for i in names if "layers" in i])
-
     return names
 
 
-def get_param_act_info(model_name, model, layer_names: List[str], dummy_input) -> dict:
+def get_param_act_info(
+    model_name: str,
+    model: nn.Module, 
+    layer_names: List[str],
+    dummy_input: torch.Tensor
+) -> ModelMemoryInfo:
+    """Get parameter and activation memory info for model layers
 
+    Args:
+        model_name: Name of the model
+        model: PyTorch model
+        layer_names: List of layer names to profile
+        dummy_input: Example input tensor
+
+    Returns:
+        ModelMemoryInfo containing memory statistics
+
+    Raises:
+        ValueError: If layer validation fails
+    """
     profiler = ModelProfiler(model, layer_names=layer_names)
     # Get the total parameters size
     total_parameters_bytes = profiler.get_total_parameters()
@@ -42,10 +73,11 @@ def get_param_act_info(model_name, model, layer_names: List[str], dummy_input) -
         assert ln in recorded_layer_names, f"Layer {ln} not found in the model"
         activation_parameters_bytes.append(tmp[recorded_layer_names.index(ln)][1])
 
-    return {
-        "model_name": model_name,
-        "number_of_layers": len(layer_names),
-        "total_parameters_bytes": total_parameters_bytes,
-        "parameters_per_layer_bytes": parameters_per_layer_bytes,
-        "activation_parameters_bytes": activation_parameters_bytes,
-    }
+    return ModelMemoryInfo(
+        model_name=model_name,
+        number_of_layers=len(layer_names),
+        total_parameters_bytes=total_parameters_bytes,
+        parameters_per_layer_bytes=parameters_per_layer_bytes,
+        activation_parameters_bytes=activation_parameters_bytes
+    )
+

@@ -114,7 +114,7 @@ def main(job_config: JobConfig):
     activation_size_name = [
         (act_size, layer_name)
         for act_size, layer_name in zip(
-            model_layer_profile["activation_parameters_bytes"], total_layers_name
+            model_layer_profile.activation_parameters_bytes, total_layers_name
         )
     ]
 

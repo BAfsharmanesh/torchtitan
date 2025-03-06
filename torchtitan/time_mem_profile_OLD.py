@@ -176,7 +176,7 @@ def register_timing_hooks(
         #     hooks[name] = [h1, h2]
 
 
-def get_layer_names(model, return_filtered=False):
+def get_layer_names(model):
     names = []
     for name, child in model.named_children():
         if name == "layers":

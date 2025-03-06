@@ -55,14 +55,12 @@ def save_metrics(
 
     model_metrics = ModelMetrics(
         model=Model(
-            model_name=model_profile["model_name"],
-            num_layers=model_profile["number_of_layers"],
+            model_name=model_profile.model_name,
+            num_layers=model_profile.number_of_layers,
             parameters=Parameters(
-                total_parameters_bytes=model_profile["total_parameters_bytes"],
-                parameters_per_layer_bytes=model_profile["parameters_per_layer_bytes"],
-                activation_parameters_bytes=model_profile[
-                    "activation_parameters_bytes"
-                ],
+                total_parameters_bytes=model_profile.total_parameters_bytes,
+                parameters_per_layer_bytes=model_profile.parameters_per_layer_bytes,
+                activation_parameters_bytes=model_profile.activation_parameters_bytes,
             ),
         ),
         execution_time=ExecutionTime(
@@ -155,7 +153,7 @@ def save_metrics(
         )
 
     model_metrics_json = json.dumps(asdict(model_metrics), indent=2)
-    tmp_model_name = model_profile["model_name"]
+    tmp_model_name = model_profile.model_name
     # save file to file_path/"DeviceType.{device}_tp{tp}_bs{bs}".json
     if rank is not None:
         rank = f"_{rank}"

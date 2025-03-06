@@ -186,8 +186,8 @@ class TestUtilityFunctions(unittest.TestCase):
         dummy_input = torch.randn(1, 10)
         layer_names = ["0", "2"]
         info = get_param_act_info("test_model", model, layer_names, dummy_input)
-        self.assertEqual(info["model_name"], "test_model")
-        self.assertEqual(info["number_of_layers"], len(layer_names))
+        self.assertEqual(info.model_name, "test_model")
+        self.assertEqual(info.number_of_layers, len(layer_names))
 
     def test_measure_activation_shape(self):
         model = torch.nn.Sequential(
