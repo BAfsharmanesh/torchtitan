@@ -4,15 +4,18 @@ from typing import List
 
 import torch
 
+from torchtitan.profilers.base_profiler import BaseProfiler
 
-class TimeProfiler:
+
+class TimeProfiler(BaseProfiler):
     def __init__(self, layer_names: List[str] = None):
         """_summary_
 
         Args:
             layer_names (List[str], optional): list of layer names to profile. Defaults to None.
         """
-        self.hook_layers = layer_names
+        super().__init__(layer_names)
+        # self.hook_layers = layer_names
 
         self.timings = {}
         self.memory_usage = {}
@@ -20,7 +23,7 @@ class TimeProfiler:
 
     def register_timing_hooks(self, model, func=None):
         register_timing_hooks(
-            model, self.timings, self.memory_usage, self.hook_layers, func, self.hooks
+            model, self.timings, self.memory_usage, self.layer_names, func, self.hooks
         )
 
     def get_timings(self):
@@ -62,7 +65,7 @@ class TimeProfiler:
             layer_name = self._return_layer_name(layer)
             if layer_name not in layer_compute_total_ms_dict:
                 layer_compute_total_ms_dict[layer_name] = 0
-            if layer_name in self.hook_layers:
+            if layer_name in self.layer_names:
                 layer_compute_total_ms_dict[layer_name] += value
 
         layer_compute_total_ms_dict = list(layer_compute_total_ms_dict.items())
