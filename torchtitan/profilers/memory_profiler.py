@@ -1,11 +1,11 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
 import torch
 from torch.optim import Optimizer
 
 from .base_profiler import BaseProfiler
-from .types import TensorMemoryInfo, MemoryUsageMetrics, LayerMemoryMetrics
+from .types import TensorMemoryInfo
 
 
 
@@ -210,11 +210,11 @@ class MemoryProfiler(BaseProfiler):
             self.optimizer_memory_usage[layer].append(mem)
         self.total_optimizer_mem_size.append(total_optimizer_mem)
 
-    def get_memory_usage(self) -> MemoryUsageMetrics:
+    def get_memory_usage(self) -> Dict:
         """Get all memory usage metrics
         
         Returns:
-            MemoryUsageMetrics containing all tracked memory information
+            Dict containing all tracked memory information
         """
         return {
             "activation": self.activation_memory_usage,
@@ -230,45 +230,77 @@ class MemoryProfiler(BaseProfiler):
             },
         }
 
-    def get_average_metrics(self, warm, active, layers_name):
-
+    def get_average_metrics(self, warm: int, active: int, layers_name: List[str]) -> Dict:
+        """Calculate average memory metrics over warm-up and active steps
+        
+        Args:
+            warm: Number of warm-up steps to skip
+            active: Number of active steps to average over 
+            layers_name: List of layer names to get metrics for
+            
+        Returns:
+            Dictionary containing averaged memory metrics
+            
+        Raises:
+            AssertionError: If active steps <= 0 or not enough samples
+        """
+        
+        # Get raw memory metrics
+        memory_metrics = self.get_memory_usage()
+        
+        # Calculate averages for each metric type    
         avg_mem_usage = {}
-        total_res = self.get_memory_usage()
-        for key, value in total_res.items():
-            avg_mem_usage[key] = {}
-            for ln, mem in value.items():
-                assert (
-                    len(mem) >= warm + active
-                ), f"Number of memory usage for {ln} is less than active+warm steps"
-                avg_mem_usage[key][ln] = sum(mem[warm : warm + active]) / (active)
+        for key, value in memory_metrics.items():
+            if key == "total":
+                # Handle total metrics separately
+                avg_mem_usage[key] = self._average_total_metrics(value, warm, active)
+            else:
+                # Handle per-layer metrics
+                avg_mem_usage[key] = self._average_layer_metrics(value, warm, active)            
 
-        self.layer_memory_total_mb = []
-        for ln in self.layer_names:
-            self.layer_memory_total_mb.append(
-                (
-                    ln,
-                    avg_mem_usage["activation"][ln]
-                    + avg_mem_usage["weight"][ln]
-                    + avg_mem_usage["grad"][ln]
-                    + avg_mem_usage["optimizer"][ln],
-                )
-            )
 
-        # self.layer_memory_total_mb = [
-        #     i[1] for i in sorted(self.layer_memory_total_mb) if i[0] in layers_name
-        # ]
-        # avg_mem_usage["layer_memory_total_mb"] = self.layer_memory_total_mb
+        # Calculate total memory per layer
+        layer_totals = self._calculate_layer_totals(avg_mem_usage, self.layer_names)
 
-        recorded_layer_names = [i[0] for i in self.layer_memory_total_mb]
-        avg_mem_usage["layer_memory_total_mb"] = []
-
+        # Validate and extract requested layers
+        recorded_layer_names = [i[0] for i in layer_totals]
         self._validate_layer_names(recorded_layer_names, layers_name)
-        for ln in layers_name:
-            avg_mem_usage["layer_memory_total_mb"].append(
-                self.layer_memory_total_mb[recorded_layer_names.index(ln)][1]
-            )
+        
+        avg_mem_usage["layer_memory_total_mb"] = [
+            layer_totals[recorded_layer_names.index(ln)][1] 
+            for ln in layers_name
+        ]        
 
         return avg_mem_usage
+
+    def _average_total_metrics(self, metrics: Dict[str, List[float]], warm: int, active: int) -> Dict[str, float]:
+        """Average the total metrics over the active period"""
+        avg_metrics = {}
+        for key, values in metrics.items():           
+            assert len(values) >= warm + active, \
+                f"Number of memory usage samples for {key} is less than warm+active steps"
+            avg_metrics[key] = sum(values[warm:warm + active]) / active
+        return avg_metrics
+
+    def _average_layer_metrics(self, metrics: Dict[str, List[float]], warm: int, active: int) -> Dict[str, float]:
+        """Average per-layer metrics over the active period"""
+        avg_metrics = {}
+        for layer_name, values in metrics.items():
+            assert len(values) >= warm + active, \
+                f"Number of memory usage samples for {layer_name} is less than warm+active steps"
+            avg_metrics[layer_name] = sum(values[warm:warm + active]) / active
+        return avg_metrics
+
+    def _calculate_layer_totals(self, metrics: Dict, layer_names: List[str]) -> List[Tuple[str, float]]:
+        """Calculate total memory usage per layer across all metric types"""
+        layer_totals = []
+        for layer_name in layer_names:
+            total = sum(
+                metrics[key][layer_name]
+                for key in ["activation", "weight", "grad", "optimizer"]
+            )
+            layer_totals.append((layer_name, total))
+        return layer_totals
 
     def log_max_reserved_gib(self, max_reserved_gib):
         self.max_reserved_gib.append(max_reserved_gib)

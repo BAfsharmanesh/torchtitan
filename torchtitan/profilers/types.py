@@ -16,19 +16,4 @@ class ModelMemoryInfo:
     parameters_per_layer_bytes: List[int]
     activation_parameters_bytes: List[int]
 
-@dataclass
-class LayerMemoryMetrics:
-    activation_memory: float  # in MB
-    weight_memory: float     # in MB
-    grad_memory: float       # in MB
-    optimizer_memory: float  # in MB
-
-@dataclass
-class MemoryUsageMetrics:
-    activation: Dict[str, List[float]]
-    weight: Dict[str, List[float]]
-    grad: Dict[str, List[float]]
-    optimizer: Dict[str, List[float]]
-    total: Dict[str, List[float]]
-    layer_memory_total_mb: List[float]
     
