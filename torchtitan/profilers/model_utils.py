@@ -1,17 +1,10 @@
-from typing import Dict, List, Tuple, Any
-import torch
-from .model_profiler import ModelLayerProfile
-from .activation_profiler import measure_activation_shape
+from typing import List
 
-def get_layer_names(model: torch.nn.Module) -> List[str]:
-    """Get names of all layers in model.
-    
-    Args:
-        model: PyTorch model to inspect
-        
-    Returns:
-        List of layer names in forward pass order
-    """
+from .model_profiler import ModelProfiler
+
+
+
+def get_layer_names(model, return_filtered=False):
     names = []
     for name, child in model.named_children():
         if name == "layers":
@@ -21,22 +14,38 @@ def get_layer_names(model: torch.nn.Module) -> List[str]:
         # print name of the layer
         names.append(name)
 
+    if return_filtered:
+        return sorted([i for i in names if "layers" in i])
+
     return names
 
-def get_param_act_info(
-    model_name: str,
-    model: torch.nn.Module,
-    layer_names: List[str],
-    dummy_input: torch.Tensor
-) -> Dict[str, Any]:
-    """Get parameter and activation information for model layers."""
-    profiler = ModelLayerProfile(model, layer_names=layer_names)
-    layer_profiles = profiler.get_layer_profiles(dummy_input)
-    
+
+def get_param_act_info(model_name, model, layer_names: List[str], dummy_input) -> dict:
+
+    profiler = ModelProfiler(model, layer_names=layer_names)
+    # Get the total parameters size
+    total_parameters_bytes = profiler.get_total_parameters()
+
+    # Get the parameters size per layer
+    tmp = profiler.get_parameters_per_layer()
+    recorded_layer_names = [i[0] for i in tmp]
+    parameters_per_layer_bytes = []
+    for ln in layer_names:
+        assert ln in recorded_layer_names, f"Layer {ln} not found in the model"
+        parameters_per_layer_bytes.append(tmp[recorded_layer_names.index(ln)][1])
+
+    # Get the activation size per layer
+    tmp = profiler.get_activation_parameters_per_layer(dummy_input)
+    recorded_layer_names = [i[0] for i in tmp]
+    activation_parameters_bytes = []
+    for ln in layer_names:
+        assert ln in recorded_layer_names, f"Layer {ln} not found in the model"
+        activation_parameters_bytes.append(tmp[recorded_layer_names.index(ln)][1])
+
     return {
         "model_name": model_name,
-        "number_of_layers": len(layer_profiles),
-        "total_parameters_bytes": sum(p.parameter_size for p in layer_profiles),
-        "parameters_per_layer_bytes": [p.parameter_size for p in layer_profiles],
-        "activation_parameters_bytes": [p.activation_size for p in layer_profiles]
-    } 
+        "number_of_layers": len(layer_names),
+        "total_parameters_bytes": total_parameters_bytes,
+        "parameters_per_layer_bytes": parameters_per_layer_bytes,
+        "activation_parameters_bytes": activation_parameters_bytes,
+    }

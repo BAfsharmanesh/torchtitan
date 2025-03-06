@@ -1,71 +1,61 @@
 import contextlib
 import time
-from typing import Dict, List, Any, Optional, Callable
+from typing import List
 
 import torch
-from .base_profiler import BaseProfiler
 
-class TimeProfiler(BaseProfiler):
-    """Profiles execution time of model layers."""
-    
-    def __init__(self, layer_names: Optional[List[str]] = None):
-        """Initialize the time profiler.
-        
+
+class TimeProfiler:
+    def __init__(self, layer_names: List[str] = None):
+        """_summary_
+
         Args:
-            layer_names: List of layer names to profile
+            layer_names (List[str], optional): list of layer names to profile. Defaults to None.
         """
-        super().__init__(layer_names)
-        self.hook_layers = layer_names  # Match original naming
+        self.hook_layers = layer_names
+
         self.timings = {}
         self.memory_usage = {}
         self.hooks = {}
-        
-    def reset(self) -> None:
-        """Reset all timing measurements."""
-        self.timings.clear()
-        self.memory_usage.clear()
-        self.hooks.clear()
-        
-    def register_timing_hooks(self, model: torch.nn.Module, func: Optional[Callable] = None) -> None:
-        """Register timing hooks on model layers."""
-        for name, module in model.named_modules():
-            if name in self.hook_layers:
-                # Start timing
-                forward_pre_hook = module.register_forward_pre_hook(self._forward_pre_hook(name))
-                # End timing
-                forward_hook = module.register_forward_hook(self._forward_hook(name))
-                self.hooks[name] = [forward_pre_hook, forward_hook]
-        
-    def remove_hooks(self) -> None:
-        """Remove all registered hooks."""
-        for hooks in self.hooks.values():
-            for hook in hooks:
-                hook.remove()
-        self.hooks.clear()
-        
-    def _forward_pre_hook(self, name: str):
-        def hook(module, input):
-            if f"{name}_start" not in self.timings:
-                self.timings[f"{name}_start"] = []
-            self.timings[f"{name}_start"].append(time.perf_counter())
-        return hook
-        
-    def _forward_hook(self, name: str):
-        def hook(module, input, output):
-            if f"{name}_end" not in self.timings:
-                self.timings[f"{name}_end"] = []
-            self.timings[f"{name}_end"].append(time.perf_counter())
-        return hook
-        
+
+    def register_timing_hooks(self, model, func=None):
+        register_timing_hooks(
+            model, self.timings, self.memory_usage, self.hook_layers, func, self.hooks
+        )
+
+    def get_timings(self):
+        return self.timings
+
+    def get_memory_usage(self):
+        return self.memory_usage
+
+    def reset_timings(self):
+        self.timings = {}
+
+    def reset_memory_usage(self):
+        self.memory_usage = {}
+
+    def get_duration_timings(self):
+        timings = self.get_timings()
+        duration_timings = {}
+        for key, value in timings.items():
+            if key.endswith("end"):
+                start_key = key.replace("end", "start")
+                duration_timings[key.replace("_end", "")] = [
+                    (value[i] - timings[start_key][i]) * 1000 for i in range(len(value))
+                ]
+        return duration_timings
+
     def get_average_timings(self, warm, active, layers_name):
         assert active > 0, "Active steps should be greater than 0"
 
         duration_timings = self.get_duration_timings()
         avg_timings = {}
         for key, value in duration_timings.items():
-            assert len(value) >= warm + active, \
-                f"Number of timings for {key} is less than active+warm steps"
-            avg_timings[key] = sum(value[warm:warm + active]) / active
+            assert (
+                len(value) >= warm + active
+            ), f"Number of timings for {key} is less than active+warm steps"
+            avg_timings[key] = sum(value[warm : warm + active]) / (active)
 
         layer_compute_total_ms_dict = {}
         for layer, value in avg_timings.items():
@@ -77,78 +67,110 @@ class TimeProfiler(BaseProfiler):
 
         layer_compute_total_ms_dict = list(layer_compute_total_ms_dict.items())
 
+        # avg_timings["layer_compute_total_ms"] = [
+        #     i[1] for i in sorted(layer_compute_total_ms_dict) if i[0] in layers_name
+        # ]
+
         recorded_layer_names = [i[0] for i in layer_compute_total_ms_dict]
         avg_timings["layer_compute_total_ms"] = []
         for ln in layers_name:
-            assert ln in recorded_layer_names, \
-                f"Layer {ln} not found in the model layers {recorded_layer_names}"
+            assert (
+                ln in recorded_layer_names
+            ), f"Layer {ln} not found in the model layers {recorded_layer_names}"
             avg_timings["layer_compute_total_ms"].append(
                 layer_compute_total_ms_dict[recorded_layer_names.index(ln)][1]
             )
 
         return avg_timings
 
-    def _return_layer_name(self, name: str) -> str:
-        """Clean layer name by removing suffixes."""
+    def _return_layer_name(self, name):
         return name.removesuffix("_backward").removesuffix("_forward")
 
-    def get_metrics(self) -> Dict[str, Any]:
-        """Get timing metrics for all layers."""
-        return self.get_average_timings(0, 0, self.hook_layers)
-
-    def get_duration_timings(self) -> Dict[str, List[float]]:
-        """Calculate duration between start and end timings."""
-        duration_timings = {}
-        for name in self.hook_layers:
-            if f"{name}_start" in self.timings and f"{name}_end" in self.timings:
-                durations = []
-                for start, end in zip(self.timings[f"{name}_start"], 
-                                    self.timings[f"{name}_end"]):
-                    durations.append((end - start) * 1000)  # Convert to ms
-                duration_timings[name] = durations
-        return duration_timings
-
     @contextlib.contextmanager
-    def record_time(self, key: str, sync: bool = True):
-        """Context manager for timing arbitrary code blocks.
-        
-        Args:
-            key: Name for this timing measurement
-            sync: Whether to synchronize CUDA operations
-        """
+    def record_time(self, key, sync):
         if key + "_start" not in self.timings:
             self.timings[key + "_start"] = []
             self.timings[key + "_end"] = []
         if sync:
             torch.cuda.synchronize()
-        self.timings[key + "_start"].append(time.perf_counter())
-        yield
+        self.timings[key + "_start"].append(time.time())
+        yield  # Yield control back to the calling context
         if sync:
             torch.cuda.synchronize()
-        self.timings[key + "_end"].append(time.perf_counter())
+        self.timings[key + "_end"].append(time.time())
 
-    def record_time_tic(self, key: str, sync: bool = True):
-        """Start timing measurement.
-        
-        Args:
-            key: Name for this timing measurement
-            sync: Whether to synchronize CUDA operations
-        """
+    def record_time_tic(self, key, sync):
         if key + "_start" not in self.timings:
             self.timings[key + "_start"] = []
             self.timings[key + "_end"] = []
         if sync:
             torch.cuda.synchronize()
-        self.timings[key + "_start"].append(time.perf_counter())
+        self.timings[key + "_start"].append(time.time())
 
-    def record_time_toc(self, key: str, sync: bool = True):
-        """End timing measurement.
-        
-        Args:
-            key: Name for this timing measurement
-            sync: Whether to synchronize CUDA operations
-        """
-        assert key + "_end" in self.timings, f"No matching start time found for {key}"
+    def record_time_toc(self, key, sync):
+        assert key + "_end" in self.timings, f"Key {key}_end not found in timings"
         if sync:
             torch.cuda.synchronize()
-        self.timings[key + "_end"].append(time.perf_counter()) 
+        self.timings[key + "_end"].append(time.time())
+
+
+def register_timing_hooks(
+    model, timings, memory_usage, hook_layers, func=None, hooks=None
+):
+
+    def start_time(layer_name, pass_type, func=None):
+        def hook(module, input):
+            torch.cuda.synchronize()  # Ensure all CUDA operations are finished
+            timings.setdefault(f"{layer_name}_{pass_type}_start", []).append(
+                time.time()
+            )
+            torch.cuda.reset_peak_memory_stats()
+            if func is not None:
+                func()
+
+        return hook
+
+    def end_time(layer_name, pass_type, func=None):
+        def hook(module, input, output):
+            torch.cuda.synchronize()  # Ensure all CUDA operations are finished
+            timings.setdefault(f"{layer_name}_{pass_type}_end", []).append(time.time())
+
+            memory_usage.setdefault(
+                f"{layer_name}_{pass_type}_start_reserved", []
+            ).append(torch.cuda.max_memory_reserved())
+
+            memory_usage.setdefault(
+                f"{layer_name}_{pass_type}_start_allocated", []
+            ).append(torch.cuda.max_memory_allocated())
+
+            if func is not None:
+                func()
+
+        return hook
+
+    # Iterate over each layer and register hooks
+    # Only apply hooks to container-like layers, not leaf layers
+    # hook_layers = [f"layers.{i}" for i in range(10)]
+    # hook_layers = hook_layers + ["norm", "output"]
+
+    for name, layer in model.named_modules():
+        if name in hook_layers:
+            if name in hooks:
+                for layer_hooks in hooks[name]:
+                    layer_hooks.remove()
+                # delete key name from hooks
+                del hooks[name]
+            # print("Registering hooks for layer", name)
+            h1 = layer.register_forward_pre_hook(start_time(name, "forward"))
+            h2 = layer.register_forward_hook(end_time(name, "forward", func))
+            h3 = layer.register_full_backward_pre_hook(start_time(name, "backward"))
+            h4 = layer.register_full_backward_hook(end_time(name, "backward"))
+            hooks[name] = [h1, h2, h3, h4]
+        # elif name in ["tok_embeddings"]:
+        #     if name in hooks:
+        #         for layer_hooks in hooks[name]:
+        #             layer_hooks.remove()
+        #         del hooks[name]
+        #     h1 = layer.register_forward_pre_hook(start_time(name, "forward"))
+        #     h2 = layer.register_forward_hook(end_time(name, "forward", func))
+        #     hooks[name] = [h1, h2]

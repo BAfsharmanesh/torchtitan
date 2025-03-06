@@ -1,225 +1,249 @@
-from typing import Dict, List, Optional, Any
+from typing import List
+
 import torch
-from .base_profiler import BaseProfiler
 
-class MemoryProfiler(BaseProfiler):
-    """Profiles memory usage of model layers, including activations, weights, gradients and optimizer states."""
-    
-    def __init__(self, layer_names: Optional[List[str]] = None):
-        """Initialize the memory profiler.
-        
+
+class MemoryProfiler:
+    def __init__(self, layer_names: List[str] = None):
+        """_summary_
+
         Args:
-            layer_names: List of layer names to profile. Must be sorted in forward pass order.
+            layer_names (List[str], optional): layer_names should be sorted in the order of forward pass. Defaults to None.
         """
-        super().__init__(layer_names)
-        self.reset()
 
-    def reset(self) -> None:
-        """Reset all memory usage measurements."""
-        self.activation_memory_usage = {ln: [] for ln in self.layer_names}
-        self.weight_memory_usage = {ln: [] for ln in self.layer_names}
-        self.grad_memory_usage = {ln: [] for ln in self.layer_names}
-        self.optimizer_memory_usage = {ln: [] for ln in self.layer_names}
-        
-        # Total memory tracking
-        self.total_activation_mem_size: List[float] = []
-        self.total_weight_mem_size: List[float] = []
-        self.total_grad_mem_size: List[float] = []
-        self.total_optimizer_mem_size: List[float] = []
-        self.max_reserved_gib: List[float] = []
+        self.layer_names = layer_names
 
+        self.reset_memory_usage()
 
-    def log_activation_memory_info(self, saved_tensor_mem_layer: List[float]) -> None:
-        """Log activation memory usage for each layer.
-        
-        Args:
-            saved_tensor_mem_layer: List of memory usage in MB for each layer's activations
-        """
-        assert len(saved_tensor_mem_layer) == len(self.layer_names), \
-            "Number of layers and memory usage list should match"
-            
+    def log_activation_memory_info(self, saved_tensor_mem_layer: list[float]):
+        assert len(saved_tensor_mem_layer) == len(
+            self.layer_names
+        ), "Number of layers and memory usage list should match"
         for layer_mem, ln in zip(saved_tensor_mem_layer, self.layer_names):
             self.activation_memory_usage[ln].append(layer_mem)
+
         self.total_activation_mem_size.append(sum(saved_tensor_mem_layer))
 
-    def log_weight_grad_optimizer_memory_info(
-        self, 
-        model: torch.nn.Module, 
-        optimizer: torch.optim.Optimizer,
-        device: torch.device
-    ) -> None:
-        """Log memory usage for weights, gradients and optimizer states.
-        
+    def log_weight_grad_optimizer_memory_info(self, model, optimizers, device):
+        """ log weight, grad, and optimizer memory usage for each layer in self.layer_names
+
         Args:
-            model: PyTorch model being profiled
-            optimizer: Optimizer being used
-            device: Device where model/optimizer reside
+            model (_type_): _description_
+            optimizers (_type_): _description_
+            device (_type_): _description_
+
+        Raises:
+            ValueError: _description_
         """
-        # Track parameter storage IDs to layer mapping
-        id_layer_param_num: Dict[int, Dict[str, Any]] = {}
-        id_param_num_untracked: Dict[int, Dict[str, Any]] = {}
-        
+
         total_weight_size = 0
         total_grad_size = 0
-
-        # Collect memory usage per layer
+        
+        # iterate over each layer and get the memort address of the parameters, weights and grads memory usage
+        # if the layer is in self.layer_names
+        id_layer_param_num = {}
+        id_param_num_untracked = {}
         for name, layer in model.named_modules():
             if name in self.layer_names:
-                # Get memory usage for parameters
-                weight_size = self._get_storage_size(layer.parameters()) / (1024 * 1024)
-                grad_size = self._get_grad_size(layer.parameters()) / (1024 * 1024)
                 
-                self.weight_memory_usage[name].append(weight_size)
-                self.grad_memory_usage[name].append(grad_size)
-                total_weight_size += weight_size
-                total_grad_size += grad_size
-                
-                # Track parameter storage IDs
-                for param in layer.parameters():
-                    storage_id = self._get_storage_id(param)
+                # get memory address of the parameters of a layer
+                for t in layer.parameters():
+                    assert t.device == device
+                    if isinstance(t, torch.distributed.tensor.DTensor):
+                        storage_id = id(t.to_local().untyped_storage())
+                    else:
+                        storage_id = id(t.untyped_storage())
                     id_layer_param_num[storage_id] = {"layer": name}
+
+                # get memory usage of the parameters for a layer
+                weight_size_layer = (
+                    sum(
+                        [
+                            (
+                                t.to_local().untyped_storage().nbytes()
+                                if isinstance(t, torch.distributed.tensor.DTensor)
+                                else t.untyped_storage().nbytes()
+                            )
+                            for t in layer.parameters()
+                        ]
+                    )
+                    / 1024
+                    / 1024
+                )
+
+                # get memory usage of the grads for a layer
+                grad_size_layer = (
+                    sum(
+                        [
+                            (
+                                t.grad.to_local().untyped_storage().nbytes()
+                                if isinstance(t.grad, torch.distributed.tensor.DTensor)
+                                else t.grad.untyped_storage().nbytes()
+                            )
+                            for t in layer.parameters()
+                            if t.grad is not None
+                        ]
+                    )
+                    / 1024
+                    / 1024
+                )
+                # print(name, "weights", weight_size_layer, "MB", "grads", grad_size_layer, "MB")
+                self.weight_memory_usage[name].append(weight_size_layer)
+                self.grad_memory_usage[name].append(grad_size_layer)
+                total_weight_size += weight_size_layer
+                total_grad_size += grad_size_layer
+            
             else:
-                for param in layer.parameters():
-                    storage_id = self._get_storage_id(param)
+                # get memory address of the parameters of a layer
+                for t in layer.parameters():
+                    assert t.device == device
+                    if isinstance(t, torch.distributed.tensor.DTensor):
+                        storage_id = id(t.to_local().untyped_storage())
+                    else:
+                        storage_id = id(t.untyped_storage())
                     id_param_num_untracked[storage_id] = {"layer": name}
 
-        # Map parameters to their indices
-        for param_idx, param in enumerate(model.parameters()):
-            storage_id = self._get_storage_id(param)
-            if storage_id in id_layer_param_num:
-                id_layer_param_num[storage_id]["param_num"] = param_idx
+        # print("total weight size:", total_weight_size, "MB")
+        # print("total grads size:", total_grad_size, "MB")
+        # print("total optimizer state size:", total_weight_size * 2, "MB")
 
-        # Track optimizer state memory
-        param_num_to_layer = {
-            v["param_num"]: v["layer"] 
-            for v in id_layer_param_num.values() 
-            if "param_num" in v
-        }
-        
-        optimizer_mem_layer = {layer: 0.0 for layer in self.layer_names}
-        total_optimizer_mem = 0.0
-        
-        # Sum up optimizer state memory per layer
-        state_dict = optimizer.state_dict()["state"]
-        for param_idx, param_state in state_dict.items():
-            if param_idx in param_num_to_layer:
-                layer_name = param_num_to_layer[param_idx]
-                state_mem = sum(
-                    self._get_storage_size([t]) / (1024 * 1024)
-                    for t in param_state.values()
-                    if isinstance(t, torch.Tensor)
-                )
-                optimizer_mem_layer[layer_name] += state_mem
-                total_optimizer_mem += state_mem
-
-        # Record optimizer memory usage
-        for layer, mem in optimizer_mem_layer.items():
-            self.optimizer_memory_usage[layer].append(mem)
-        self.total_optimizer_mem_size.append(total_optimizer_mem)
-        
-        # Record total memory usage
         self.total_weight_mem_size.append(total_weight_size)
         self.total_grad_mem_size.append(total_grad_size)
 
-    def log_max_reserved_gib(self, max_reserved_gib: float) -> None:
-        """Log maximum reserved GPU memory.
-        
-        Args:
-            max_reserved_gib: Maximum reserved memory in GiB
-        """
-        self.max_reserved_gib.append(max_reserved_gib)
+        # assign param_num to each parameter in the model, so each parameter can be identified by its index and storage id
+        for t_n, t in enumerate(model.parameters()):
+            if isinstance(t, torch.distributed.tensor.DTensor):
+                storage_id = id(t.to_local().untyped_storage())
+            else:
+                storage_id = id(t.untyped_storage())
 
-    def get_metrics(self) -> Dict[str, Any]:
-        """Get the memory usage metrics for all layers."""
-        metrics = {}
-        for name in self.layer_names:
-            metrics[name] = {
-                "activation": sum(self.activation_memory_usage[name]) / len(self.activation_memory_usage[name]) if self.activation_memory_usage[name] else 0,
-                "weights": sum(self.weight_memory_usage[name]) / len(self.weight_memory_usage[name]) if self.weight_memory_usage[name] else 0,
-                "gradients": sum(self.grad_memory_usage[name]) / len(self.grad_memory_usage[name]) if self.grad_memory_usage[name] else 0,
-                "optimizer": sum(self.optimizer_memory_usage[name]) / len(self.optimizer_memory_usage[name]) if self.optimizer_memory_usage[name] else 0
-            }
-        
-        # Add totals
-        metrics["total"] = {
-            "activation": sum(self.total_activation_mem_size) / len(self.total_activation_mem_size) if self.total_activation_mem_size else 0,
-            "weights": sum(self.total_weight_mem_size) / len(self.total_weight_mem_size) if self.total_weight_mem_size else 0,
-            "gradients": sum(self.total_grad_mem_size) / len(self.total_grad_mem_size) if self.total_grad_mem_size else 0,
-            "optimizer": sum(self.total_optimizer_mem_size) / len(self.total_optimizer_mem_size) if self.total_optimizer_mem_size else 0,
-            "max_reserved_gib": max(self.max_reserved_gib) if self.max_reserved_gib else 0
-        }
-        
-        return metrics
+            if storage_id not in id_layer_param_num:
+                # it must be in id_param_num_untracked
+                if storage_id not in id_param_num_untracked:
+                    raise ValueError(
+                        f"Layer not found for the parameter with storage id {storage_id}"
+                    )
+            else:
+                id_layer_param_num[storage_id]["param_num"] = t_n
 
-    def get_average_memory_usage(self, warm: int, active: int, layers_name: List[str]) -> Dict[str, Any]:
-        """Get average memory usage across steps.
-        
-        Args:
-            warm: Number of warmup steps to skip
-            active: Number of active steps to average over
-            layers_name: List of layer names to include in results
-            
-        Returns:
-            Dictionary containing averaged memory metrics
-        """
-        assert active > 0, "Active steps should be greater than 0"
-        
-        # Calculate per-layer averages
-        layer_memory_total_mb = []
-        for name in layers_name:
-            total = 0
-            if name in self.activation_memory_usage:
-                values = self.activation_memory_usage[name][warm:warm + active]
-                total += sum(values) / len(values) if values else 0
-            if name in self.weight_memory_usage:
-                values = self.weight_memory_usage[name][warm:warm + active]
-                total += sum(values) / len(values) if values else 0
-            if name in self.grad_memory_usage:
-                values = self.grad_memory_usage[name][warm:warm + active]
-                total += sum(values) / len(values) if values else 0
-            if name in self.optimizer_memory_usage:
-                values = self.optimizer_memory_usage[name][warm:warm + active]
-                total += sum(values) / len(values) if values else 0
-            layer_memory_total_mb.append(total)
+        # print("id_layer_paramnum:", id_layer_paramnum)
 
-        # Calculate totals
-        total_memory = {
-            "activation": sum(self.total_activation_mem_size[warm:warm + active]) / active if self.total_activation_mem_size else 0,
-            "weights": sum(self.total_weight_mem_size[warm:warm + active]) / active if self.total_weight_mem_size else 0,
-            "gradients": sum(self.total_grad_mem_size[warm:warm + active]) / active if self.total_grad_mem_size else 0,
-            "optimizer": sum(self.total_optimizer_mem_size[warm:warm + active]) / active if self.total_optimizer_mem_size else 0,
-            "total_memory": sum(layer_memory_total_mb)
+        # dict with key: param_num, value: layer and id
+        param_num_layer_id = {
+            v["param_num"]: {"layer": v["layer"], "id": k}
+            for k, v in id_layer_param_num.items()
         }
 
+        # list of layers in the model that we recorded memory usage for
+        layer_list = [v["layer"] for k, v in id_layer_param_num.items()]
+
+        # print(optimizers.optimizers[0].state_dict())
+        state = optimizers.state_dict()["state"]
+        # params = optimizers.optimizers[0].state_dict()["param_groups"][0]["params"]
+        
+        # iterate over each layer and get the memory address of the optimizer state for each layer
+        # if the layer is in (layer_list) self.layer_names
+        optimizer_mem = 0
+        optimizer_mem_layer = {}
+        for layer in layer_list:
+            optimizer_mem_layer[layer] = 0
+        for k in state.keys():
+            for t in state[k].values():
+                if isinstance(t, torch.distributed.tensor.DTensor):
+                    optimizer_mem_layer[param_num_layer_id[k]["layer"]] += (
+                        t.to_local().untyped_storage().nbytes() / 1024 / 1024
+                    )
+                    optimizer_mem += (
+                        t.to_local().untyped_storage().nbytes() / 1024 / 1024
+                    )
+                else:
+                    optimizer_mem_layer[param_num_layer_id[k]["layer"]] += (
+                        t.untyped_storage().nbytes() / 1024 / 1024
+                    )
+                    optimizer_mem += t.untyped_storage().nbytes() / 1024 / 1024
+
+        # print("total optimizer state size:", optimizer_mem, "MB")
+        # print(
+        #     "optimizer_mem_layer:",
+        #     optimizer_mem_layer,
+        #     sum(optimizer_mem_layer.values()),
+        # )
+
+        for ln, mem in optimizer_mem_layer.items():
+            self.optimizer_memory_usage[ln].append(mem)
+        self.total_optimizer_mem_size.append(optimizer_mem)
+
+    def get_memory_usage(self):
         return {
-            "total": total_memory,
-            "layer_memory_total_mb": layer_memory_total_mb
+            "activation": self.activation_memory_usage,
+            "weight": self.weight_memory_usage,
+            "grad": self.grad_memory_usage,
+            "optimizer": self.optimizer_memory_usage,
+            "total": {
+                "weight": self.total_weight_mem_size,
+                "grad": self.total_grad_mem_size,
+                "optimizer": self.total_optimizer_mem_size,
+                "activation": self.total_activation_mem_size,
+                "total_memory": [i * 1024 for i in self.max_reserved_gib],
+            },
         }
 
-    @staticmethod
-    def _get_storage_id(tensor: torch.Tensor) -> int:
-        """Get unique storage ID for a tensor."""
-        if isinstance(tensor, torch.distributed.tensor.DTensor):
-            return id(tensor.to_local().untyped_storage())
-        return id(tensor.untyped_storage())
+    def get_average_memory_usage(self, warm, active, layers_name):
+        assert active > 0, "Active steps should be greater than 0"
 
-    @staticmethod
-    def _get_storage_size(tensors) -> int:
-        """Get total storage size in bytes for a collection of tensors."""
-        return sum(
-            t.to_local().untyped_storage().nbytes()
-            if isinstance(t, torch.distributed.tensor.DTensor)
-            else t.untyped_storage().nbytes()
-            for t in tensors
-        )
+        avg_mem_usage = {}
+        total_res = self.get_memory_usage()
+        for key, value in total_res.items():
+            avg_mem_usage[key] = {}
+            for ln, mem in value.items():
+                assert (
+                    len(mem) >= warm + active
+                ), f"Number of memory usage for {ln} is less than active+warm steps"
+                avg_mem_usage[key][ln] = sum(mem[warm : warm + active]) / (active)
 
-    @staticmethod
-    def _get_grad_size(parameters) -> int:
-        """Get total gradient size in bytes for a collection of parameters."""
-        return sum(
-            (t.grad.to_local().untyped_storage().nbytes()
-             if isinstance(t.grad, torch.distributed.tensor.DTensor)
-             else t.grad.untyped_storage().nbytes())
-            for t in parameters
-            if t.grad is not None
-        ) 
+        self.layer_memory_total_mb = []
+        for ln in self.layer_names:
+            self.layer_memory_total_mb.append(
+                (
+                    ln,
+                    avg_mem_usage["activation"][ln]
+                    + avg_mem_usage["weight"][ln]
+                    + avg_mem_usage["grad"][ln]
+                    + avg_mem_usage["optimizer"][ln],
+                )
+            )
+
+        # self.layer_memory_total_mb = [
+        #     i[1] for i in sorted(self.layer_memory_total_mb) if i[0] in layers_name
+        # ]
+        # avg_mem_usage["layer_memory_total_mb"] = self.layer_memory_total_mb
+
+        recorded_layer_names = [i[0] for i in self.layer_memory_total_mb]
+        avg_mem_usage["layer_memory_total_mb"] = []
+        for ln in layers_name:
+            assert ln in recorded_layer_names, f"Layer {ln} not found in the model"
+            avg_mem_usage["layer_memory_total_mb"].append(
+                self.layer_memory_total_mb[recorded_layer_names.index(ln)][1]
+            )
+
+        return avg_mem_usage
+
+    def reset_memory_usage(self):
+        self.activation_memory_usage = {}
+        self.weight_memory_usage = {}
+        self.grad_memory_usage = {}
+        self.optimizer_memory_usage = {}
+        for ln in self.layer_names:
+            self.activation_memory_usage[ln] = []
+            self.weight_memory_usage[ln] = []
+            self.grad_memory_usage[ln] = []
+            self.optimizer_memory_usage[ln] = []
+
+        self.total_activation_mem_size = []
+        self.total_weight_mem_size = []
+        self.total_grad_mem_size = []
+        self.total_optimizer_mem_size = []
+        self.max_reserved_gib = []
+
+    def log_max_reserved_gib(self, max_reserved_gib):
+        self.max_reserved_gib.append(max_reserved_gib)

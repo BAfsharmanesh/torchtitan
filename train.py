@@ -28,15 +28,15 @@ from torchtitan.parallelisms import (
 )
 from torchtitan.profiling import maybe_enable_memory_snapshot, maybe_enable_profiling
 from torchtitan.profilers import (
-    TimeProfiler as LayerTimeProfiler,
-    MemoryProfiler as LayerMemoryProfiler,
+    TimeProfiler,
+    MemoryProfiler,
     SavedActivationContext,
     get_layer_names,
     get_param_act_info,
-    save_metrics as save_metis_object,
+    save_metrics,
     measure_activation_shape,
+    slice_layers_2_fit_gpu,
     get_dummy_input,
-    slice_layers_2_fit_gpu
 )
 
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
@@ -382,8 +382,8 @@ def main(job_config: JobConfig):
         f"(warmup {job_config.training.warmup_steps})"
     )
 
-    layer_time_profiler = LayerTimeProfiler(layer_names=total_layers_name)
-    layer_memory_profiler = LayerMemoryProfiler(layer_names=total_layers_name)
+    layer_time_profiler = TimeProfiler(layer_names=total_layers_name)
+    layer_memory_profiler = MemoryProfiler(layer_names=total_layers_name)
 
     with maybe_enable_profiling(
         job_config, global_step=train_state.step
@@ -470,7 +470,6 @@ def main(job_config: JobConfig):
                 )
                 with train_context(optional_context_parallel_ctx):
                     with SavedActivationContext(
-                        layer_names=total_layers_name,
                         ignored_tensors=model.parameters()
                     ) as saved_activations:
                         layer_time_profiler.register_timing_hooks(
@@ -641,7 +640,7 @@ def main(job_config: JobConfig):
     elif config.model.name == "moe":
         number_of_layers = model_config.n_layers
 
-    metis_input = save_metis_object(
+    metis_input = save_metrics(
         layer_time_profiler.get_average_timings(
             warm=3, active=7, layers_name=total_layers_name
         ),
