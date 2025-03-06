@@ -122,7 +122,8 @@ class MemoryProfiler(BaseProfiler):
                     storage_id = self._get_tensor_storage_id(param)
                     untracked_tensor_info[storage_id] = TensorMemoryInfo(
                         storage_id, layer_name
-                    )                
+                    )  
+                continue              
 
             weight_size = 0
             grad_size = 0
@@ -194,7 +195,7 @@ class MemoryProfiler(BaseProfiler):
         total_optimizer_mem = 0
 
         state_dict = optimizer.state_dict()["state"]
-        for param_idx, values in state_dict.items():
+        for param_idx, state in state_dict.items():
 
             if param_idx not in param_2_layer_mapping:
                 raise ValueError(
@@ -202,7 +203,7 @@ class MemoryProfiler(BaseProfiler):
                 )
 
             layer_name = param_2_layer_mapping[param_idx].layer_name
-            for tensor in values:
+            for tensor in state.values():
                 optimizer_mem_layer[layer_name] += self._get_tensor_size_mb(tensor)
                 total_optimizer_mem += self._get_tensor_size_mb(tensor)
 
