@@ -652,7 +652,7 @@ def main(job_config: JobConfig):
         job_config.training.tensor_parallel_degree,
         job_config.training.batch_size,
         "A6000",
-        actual__profiler_number_of_layers=None,  # (number_of_layers, 4),
+        actual_profiler_number_of_layers=None,  # (number_of_layers, 4),
         first_layer_index=1,
         rank=pp_mesh.get_local_rank() if parallel_dims.pp_enabled else None,
     )

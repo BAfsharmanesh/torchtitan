@@ -771,7 +771,7 @@ def save_metis_object(
     tp: int,
     bs: int,
     device: str,
-    actual__profiler_number_of_layers=None,
+    actual_profiler_number_of_layers=None,
     first_layer_index=None,
     rank=None,
 ) -> Dict:
@@ -848,14 +848,14 @@ def save_metis_object(
 
         return tmp2, avg
 
-    if actual__profiler_number_of_layers is not None:
+    if actual_profiler_number_of_layers is not None:
 
         # model
-        actual_n_layers = actual__profiler_number_of_layers[0]
-        profiled_n_layers = actual__profiler_number_of_layers[1]
+        actual_n_layers = actual_profiler_number_of_layers[0]
+        profiled_n_layers = actual_profiler_number_of_layers[1]
         first_layer_index = first_layer_index
 
-        model_metrics.model.num_layers = actual__profiler_number_of_layers[0]
+        model_metrics.model.num_layers = actual_profiler_number_of_layers[0]
         tmp = model_metrics.model.parameters.parameters_per_layer_bytes
         # first_layer_index = 1, actual_n_layers=4 => tmp=[x1,x2,x3,x4] , tmp2=[x1,x2,x2,x2,x2,x3,x4]
         tmp2, avg2 = match_list_to_full_model(

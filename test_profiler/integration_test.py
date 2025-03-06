@@ -197,10 +197,8 @@ if __name__ == "__main__":
         },
     ]
 
-    # TestTrainingScript([llama2_runs[0]])
-
     
-    TestTrainingScript([llama2_runs[-1]])
+    TestTrainingScript([llama2_runs[0]])
 
     # TestTrainingScript(wideresnet_runs)
     # TestTrainingScript(moe_runs)
