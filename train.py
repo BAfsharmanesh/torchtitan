@@ -470,6 +470,7 @@ def main(job_config: JobConfig):
                 )
                 with train_context(optional_context_parallel_ctx):
                     with SavedActivationContext(
+                        layer_names=total_layers_name,
                         ignored_tensors=model.parameters()
                     ) as saved_activations:
                         layer_time_profiler.register_timing_hooks(
