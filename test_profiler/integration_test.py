@@ -88,10 +88,15 @@ class TestTrainingScript:
         del os.environ["LOCAL_RANK"]
         
         # Second Process: Run the training script
-        ## set pp_degree and split points based on these results.
+        pp_degree = len(split_points)+1
+        ## set pp_degree, n_process and split points based on these results.
         indx = command.index("--experimental.pipeline_parallel_degree")
-        command[indx+1] = str(len(split_points)+1)
+        command[indx+1] = str(pp_degree)
         command.extend(["--experimental.pipeline_parallel_split_points", ",".join(map(str, split_points))])
+        indx = command.index("--nproc_per_node")
+        command[indx+1] = str(pp_degree*run["tp_degree"])
+        
+        ## run the command
         cuda_visible_devices = ",".join(map(str, run["cuda_visiable"]))
         os.environ["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices
         subprocess.run(command)
@@ -145,12 +150,12 @@ if __name__ == "__main__":
             "model": "llama2",
         },
         {
-            "cuda_visiable": [7,5,2,3,6,1,0,4],
+            "cuda_visiable": [7,2,6,1,0,4,5,3],
             "n_process": 8,
-            "batch_size": 2,
+            "batch_size": 1,
             "tp_degree": 2,
             "pp_degree": 4,
-            "flavor": "13B",
+            "flavor": "7B",
             "model": "llama2",
         },        
     ]
@@ -198,7 +203,7 @@ if __name__ == "__main__":
     ]
 
     
-    TestTrainingScript([llama2_runs[0]])
+    TestTrainingScript([llama2_runs[-1]])
 
     # TestTrainingScript(wideresnet_runs)
     # TestTrainingScript(moe_runs)
