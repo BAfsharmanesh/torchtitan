@@ -1,21 +1,27 @@
 import unittest
 import torch
-from torchtitan.time_mem_profile import (
-    LayerTimeProfiler,
-    LayerMemoryProfiler,
-    ModelLayerProfile,
-    get_layer_names,
+
+from torchtitan.profilers import (
+    TimeProfiler,
+    MemoryProfiler,
+    ModelProfiler,
     register_timing_hooks,
+    SavedActivationContext,
+    get_layer_names,
     get_param_act_info,
+    save_metrics,
     measure_activation_shape,
+    slice_layers_2_fit_gpu,
+    get_dummy_input,
 )
+
 import time
 from collections import OrderedDict
 
 
 class TestLayerTimeProfiler(unittest.TestCase):
     def setUp(self):
-        self.profiler = LayerTimeProfiler(layer_names=["layer1", "layer2"])
+        self.profiler = TimeProfiler(layer_names=["layer1", "layer2"])
 
     def test_timing_record(self):
         key = "test_layer"
@@ -55,7 +61,7 @@ class TestLayerTimeProfiler(unittest.TestCase):
 
 class TestLayerMemoryProfiler(unittest.TestCase):
     def setUp(self):
-        self.profiler = LayerMemoryProfiler(layer_names=["layer0", "layer1", "layer2"])
+        self.profiler = MemoryProfiler(layer_names=["layer0", "layer1", "layer2"])
 
     def test_reset_memory_usage(self):
         self.profiler.activation_memory_usage["layer1"] = [10, 20]
@@ -107,7 +113,7 @@ class TestModelLayerProfile(unittest.TestCase):
         self.model = torch.nn.Sequential(
             torch.nn.Linear(10, 20), torch.nn.ReLU(), torch.nn.Linear(20, 5)
         )
-        self.profiler = ModelLayerProfile(self.model, layer_names=["0", "2"])
+        self.profiler = ModelProfiler(self.model, layer_names=["0", "2"])
 
     def test_get_parameters_per_layer(self):
         params = self.profiler.get_parameters_per_layer()

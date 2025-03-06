@@ -1,4 +1,4 @@
-from .time_profiler import TimeProfiler
+from .time_profiler import TimeProfiler, register_timing_hooks
 from .memory_profiler import MemoryProfiler
 from .model_profiler import ModelProfiler
 from .activation_profiler import SavedActivationContext, measure_activation_shape
@@ -24,6 +24,7 @@ __all__ = [
     # Utility functions
     'save_metrics',
     'get_dummy_input',
+    'register_timing_hooks',
     
     # Data classes
     
