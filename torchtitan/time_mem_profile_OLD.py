@@ -202,7 +202,7 @@ class LayerMemoryProfiler:
 
         self.layer_names = layer_names
 
-        self.reset_memory_usage()
+        self.reset_metrics()
 
     def log_activation_memory_info(self, saved_tensor_mem_layer: list[float]):
         assert len(saved_tensor_mem_layer) == len(
@@ -377,7 +377,7 @@ class LayerMemoryProfiler:
             },
         }
 
-    def get_average_memory_usage(self, warm, active, layers_name):
+    def get_average_metrics(self, warm, active, layers_name):
         assert active > 0, "Active steps should be greater than 0"
 
         avg_mem_usage = {}
@@ -417,7 +417,7 @@ class LayerMemoryProfiler:
 
         return avg_mem_usage
 
-    def reset_memory_usage(self):
+    def reset_metrics(self):
         self.activation_memory_usage = {}
         self.weight_memory_usage = {}
         self.grad_memory_usage = {}

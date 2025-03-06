@@ -4,7 +4,7 @@ from typing import List
 
 import torch
 
-from torchtitan.profilers.base_profiler import BaseProfiler
+from .base_profiler import BaseProfiler
 
 
 class TimeProfiler(BaseProfiler):
@@ -49,7 +49,6 @@ class TimeProfiler(BaseProfiler):
         return duration_timings
 
     def get_average_metrics(self, warm, active, layers_name):
-        assert active > 0, "Active steps should be greater than 0"
 
         duration_timings = self.get_duration_timings()
         avg_timings = {}

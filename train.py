@@ -631,7 +631,7 @@ def main(job_config: JobConfig):
     # )
     # logger.info(f"Memory information: {layer_memory_profiler.get_memory_usage()}")
     # logger.info(
-    #     f"Memory information: {layer_memory_profiler.get_average_memory_usage(warm=3, active=3, layers_name = filter_layers_name)}"
+    #     f"Memory information: {layer_memory_profiler.get_average_metrics(warm=3, active=3, layers_name = filter_layers_name)}"
     # )
     # logger.info(f"Memory information: {memory_usage}")
 
@@ -644,7 +644,7 @@ def main(job_config: JobConfig):
         layer_time_profiler.get_average_metrics(
             warm=3, active=7, layers_name=total_layers_name
         ),
-        layer_memory_profiler.get_average_memory_usage(
+        layer_memory_profiler.get_average_metrics(
             warm=3, active=7, layers_name=total_layers_name
         ),
         model_layer_profile,

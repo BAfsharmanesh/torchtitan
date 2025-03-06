@@ -2,18 +2,18 @@ from typing import List
 
 import torch
 
+from .base_profiler import BaseProfiler
 
-class MemoryProfiler:
+class MemoryProfiler(BaseProfiler):
     def __init__(self, layer_names: List[str] = None):
         """_summary_
 
         Args:
             layer_names (List[str], optional): layer_names should be sorted in the order of forward pass. Defaults to None.
         """
+        super().__init__(layer_names)
 
-        self.layer_names = layer_names
-
-        self.reset_memory_usage()
+        self.reset_metrics()
 
     def log_activation_memory_info(self, saved_tensor_mem_layer: list[float]):
         assert len(saved_tensor_mem_layer) == len(
@@ -188,8 +188,7 @@ class MemoryProfiler:
             },
         }
 
-    def get_average_memory_usage(self, warm, active, layers_name):
-        assert active > 0, "Active steps should be greater than 0"
+    def get_average_metrics(self, warm, active, layers_name):
 
         avg_mem_usage = {}
         total_res = self.get_memory_usage()
@@ -220,15 +219,16 @@ class MemoryProfiler:
 
         recorded_layer_names = [i[0] for i in self.layer_memory_total_mb]
         avg_mem_usage["layer_memory_total_mb"] = []
+        
+        self._validate_layer_names(recorded_layer_names, layers_name)
         for ln in layers_name:
-            assert ln in recorded_layer_names, f"Layer {ln} not found in the model"
             avg_mem_usage["layer_memory_total_mb"].append(
                 self.layer_memory_total_mb[recorded_layer_names.index(ln)][1]
             )
 
         return avg_mem_usage
 
-    def reset_memory_usage(self):
+    def reset_metrics(self):
         self.activation_memory_usage = {}
         self.weight_memory_usage = {}
         self.grad_memory_usage = {}

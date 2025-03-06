@@ -63,9 +63,9 @@ class TestLayerMemoryProfiler(unittest.TestCase):
     def setUp(self):
         self.profiler = MemoryProfiler(layer_names=["layer0", "layer1", "layer2"])
 
-    def test_reset_memory_usage(self):
+    def test_reset_metrics(self):
         self.profiler.activation_memory_usage["layer1"] = [10, 20]
-        self.profiler.reset_memory_usage()
+        self.profiler.reset_metrics()
         self.assertEqual(self.profiler.activation_memory_usage["layer1"], [])
 
     def test_log_activation_memory(self):
