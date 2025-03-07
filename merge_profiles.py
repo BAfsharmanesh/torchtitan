@@ -198,7 +198,8 @@ def parse_file_name(file_name: str) -> Tuple[str, str, str, str]:
     """Parse profile filename to extract metadata using regex.
     
     Args:
-        file_name: Name of the profile file (format: [model_name_]DeviceType.[rank_]device_tp{N}_bs{N}.json)
+        file_name: Name of the profile file (format: model_name_DeviceType.device_rank_tp{N}_bs{N}.json)
+        Example: "llama2_13B_DeviceType.A6000_3_tp2_bs2.json"
         
     Returns:
         Tuple containing:
@@ -210,14 +211,13 @@ def parse_file_name(file_name: str) -> Tuple[str, str, str, str]:
     Raises:
         ValueError: If filename format is invalid
     """
-    pattern = r"(?:(.+?)_)?DeviceType\.(?:\d+_)?(\w+)_tp(\d+)_bs(\d+)\.json"
+    pattern = r"(.+?)_DeviceType\.(\w+)_(\d+)_tp(\d+)_bs(\d+)\.json"
     match = re.match(pattern, file_name)
     
     if not match:
         raise ValueError(f"Invalid file name format: {file_name}")
         
-    model_name, device_name, tp, bs = match.groups()
-    model_name = model_name or ''  # Convert None to empty string if no model name
+    model_name, device_name, rank, tp, bs = match.groups()
     
     return device_name, model_name, tp, bs
 
@@ -243,8 +243,8 @@ def merge_all_files(base_directory: str | Path) -> None:
         try:
             device_name, model_name, tp, bs = parse_file_name(file.name)
             
-            # Skip files without rank information (merged files)
-            if not re.search(r'DeviceType\.\d+_', file.name):
+            # Skip files without rank information
+            if not re.search(r'_\d+_tp\d+_bs\d+\.json$', file.name):
                 continue
                 
             key = f"{model_name}_{device_name}_tp{tp}_bs{bs}"
