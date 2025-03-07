@@ -1,6 +1,6 @@
 import os
 import json
-from typing import Optional, Iterator
+from typing import Optional, Iterator, Union
 from pathlib import Path
 import torch
 from datasets import Dataset, IterableDataset
@@ -25,7 +25,7 @@ def get_local_c4_dataset(
         Dataset or IterableDataset: Same output type as HF's load_dataset
     """
     if cache_dir is None:
-        cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "torchtitan", "datasets", "c4")
+        cache_dir = os.path.join(os.getcwd(), ".cache", "torchtitan", "datasets", "c4")
     
     os.makedirs(cache_dir, exist_ok=True)
     cache_file = os.path.join(cache_dir, f"c4_{split}.jsonl")

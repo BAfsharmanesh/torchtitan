@@ -182,7 +182,7 @@ if __name__ == "__main__":
 
 
     run = {
-        "batch_size": 40,
+        "batch_size": 16,
         "tp_degree": 1,
         "flavor": "271M",
         "model": "llama2",
