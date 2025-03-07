@@ -148,31 +148,40 @@ def merge_files(json_files: List[Path]) -> None:
     """
     if not json_files:
         raise ValueError("No JSON files provided")
+    
     files_data = []
+    base_directory = json_files[0].parent
+    first_file = True
+    device_name = None
+    model_name = None
     tp = None
     bs = None
-    base_directory = json_files[0].parent
 
     # Collect and validate file data
-    for i, json_file in enumerate(json_files):
+    for json_file in json_files:
         assert base_directory == json_file.parent, "All files must be in the same directory"
-        run_name_list, device_name_tmp, model_name_tmp, tp_tmp, bs_tmp = (
-            parse_file_name(json_file.name)
-        )
-        if i == 0:
+        
+        device_name_tmp, model_name_tmp, tp_tmp, bs_tmp = parse_file_name(json_file.name)
+        
+        if first_file:
             device_name = device_name_tmp
             model_name = model_name_tmp
             tp = tp_tmp
             bs = bs_tmp
-        if len(run_name_list) > 3:
-            json_data = read_json_file(json_file)
-            json_data = json_2_model(json_data)
-            rank_i = run_name_list[1]
-            files_data.append(ProfileData(int(rank_i), json_data))
-            assert tp == tp_tmp
-            assert bs == bs_tmp
-            assert device_name == device_name_tmp
-            assert model_name == model_name_tmp
+            first_file = False
+        
+        # Validate consistency across files
+        assert tp == tp_tmp, f"Inconsistent TP value: {tp} != {tp_tmp}"
+        assert bs == bs_tmp, f"Inconsistent batch size: {bs} != {bs_tmp}"
+        assert device_name == device_name_tmp, f"Inconsistent device: {device_name} != {device_name_tmp}"
+        assert model_name == model_name_tmp, f"Inconsistent model: {model_name} != {model_name_tmp}"
+        
+        json_data = read_json_file(json_file)
+        model_metrics = json_2_model(json_data)
+        
+        # Extract rank from filename
+        rank = int(re.search(r'_(\d+)_tp\d+_bs\d+\.json$', json_file.name).group(1))
+        files_data.append(ProfileData(rank, model_metrics))
 
     # Sort by rank
     files_data.sort(key=lambda x: x.rank)
