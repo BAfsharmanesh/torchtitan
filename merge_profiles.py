@@ -185,6 +185,9 @@ def merge_files(json_files: List[Path]) -> None:
 
     # Sort by rank
     files_data.sort(key=lambda x: x.rank)
+    
+    # [file.rank for file in files_data] should be [0, 1, 2, ...]
+    assert all(file.rank == i for i, file in enumerate(files_data)), f"Invalid rank values for {json_files[0].name}"
 
     # Verify all models are identical
     model = files_data[0].metrics.model
