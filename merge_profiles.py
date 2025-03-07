@@ -4,7 +4,20 @@ from pathlib import Path
 from typing import Dict, List
 from torchtitan.profilers.types import Parameters, Model, ExecutionTime, ExecutionMemory, ModelMetrics
 
+@dataclass
+class ProfileData:
+    rank: int
+    metrics: ModelMetrics
 
+@dataclass
+class MergedMetrics:
+    model: Model
+    total_memory_mb: float = 0
+    layer_memory_total_mb: List[float] = field(default_factory=list)
+    optimizer_time_ms: float = 0
+    layer_compute_total_ms: List[float] = field(default_factory=list)
+    batch_generator_time_ms: float = 0
+    
 
 def json_2_model(json_data):
     parameters = Parameters(**json_data["model"]["parameters"])
@@ -26,17 +39,63 @@ def read_json_file(file_name):
         data = json.load(f)
     return data
 
+def merge_execution_data(files_data: List[ProfileData]) -> MergedMetrics:
+    merged = MergedMetrics(model=files_data[0].metrics.model)
+    
+    for profile in files_data:
+        # Memory metrics
+        merged.total_memory_mb += profile.metrics.execution_memory.total_memory_mb
+        merged.layer_memory_total_mb += profile.metrics.execution_memory.layer_memory_total_mb
+        
+        # Time metrics
+        merged.optimizer_time_ms += profile.metrics.execution_time.optimizer_time_ms
+        merged.layer_compute_total_ms += profile.metrics.execution_time.layer_compute_total_ms
 
+    # Average batch generator time between first and last rank
+    first_time = files_data[0].metrics.execution_time.batch_generator_time_ms
+    last_time = files_data[-1].metrics.execution_time.batch_generator_time_ms
+    merged.batch_generator_time_ms = (first_time + last_time) / 2        
+    
+    return merged      
+
+
+
+def create_final_metrics(merged: MergedMetrics) -> ModelMetrics:
+    forward_backward_time_ms = sum(merged.layer_compute_total_ms)
+    total_time_ms = (
+        forward_backward_time_ms + merged.batch_generator_time_ms + merged.optimizer_time_ms
+    )
+    
+    execution_time = ExecutionTime(
+        total_time_ms=total_time_ms,
+        forward_backward_time_ms=forward_backward_time_ms,
+        batch_generator_time_ms=merged.batch_generator_time_ms,
+        layernorm_grads_all_reduce_time_ms=None,
+        embedding_grads_all_reduce_time_ms=None,
+        optimizer_time_ms=merged.optimizer_time_ms,
+        layer_compute_total_ms=merged.layer_compute_total_ms,
+    )
+    
+    execution_memory = ExecutionMemory(
+        total_memory_mb=merged.total_memory_mb,
+        layer_memory_total_mb=merged.layer_memory_total_mb,
+    )
+
+    return ModelMetrics(
+        model=merged.model,
+        execution_time=execution_time,
+        execution_memory=execution_memory,
+    )
+        
 def merge_files(json_files):
     files_data = []
     tp = None
     bs = None
-    # get directory name
     base_directory = json_files[0].parent
 
+    # Collect and validate file data
     for i, json_file in enumerate(json_files):
-        # assert all files have the same base_directory
-        assert base_directory == json_file.parent
+        assert base_directory == json_file.parent, "All files must be in the same directory"
         run_name_list, device_name_tmp, model_name_tmp, tp_tmp, bs_tmp = (
             parse_file_name(json_file.name)
         )
@@ -49,79 +108,31 @@ def merge_files(json_files):
             json_data = read_json_file(json_file)
             json_data = json_2_model(json_data)
             rank_i = run_name_list[1]
-            files_data.append((rank_i, json_data))
+            files_data.append(ProfileData(int(rank_i), json_data))
             assert tp == tp_tmp
             assert bs == bs_tmp
             assert device_name == device_name_tmp
             assert model_name == model_name_tmp
 
-    # sort files_data by the first element of the tuple
-    files_data.sort(key=lambda x: int(x[0]))
+    # Sort by rank
+    files_data.sort(key=lambda x: x.rank)
 
-    # assersion that all data has same data.Model
-    model = files_data[0][1].model
-    for rank, data in files_data:
-        assert data.model == model
-    final_data_model = model
+    # Verify all models are identical
+    model = files_data[0].metrics.model
+    assert all(data.metrics.model == model for data in files_data)
+    
+    # Merge and create final metrics
+    merged = merge_execution_data(files_data)
+    final_data = create_final_metrics(merged)
 
-    # sum execution_memory.total_memory_mb for all ranks
-    # concat all layer_memory_total_mb for all ranks
-    total_memory_mb = 0
-    layer_memory_total_mb = []
-    for rank, data in files_data:
-        total_memory_mb += data.execution_memory.total_memory_mb
-        layer_memory_total_mb += data.execution_memory.layer_memory_total_mb
-    final_data_execution_memory = ExecutionMemory(
-        total_memory_mb=total_memory_mb, layer_memory_total_mb=layer_memory_total_mb
-    )
+    # Save merged results
+    output_dir = Path(base_directory) / "merged"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    # sum execution_time.optimizer_time_ms for all ranks
-    # concat all layer_compute_total_ms for all ranks
-    # average batch_generator_time_ms for all ranks
-    optimizer_time_ms = 0
-    layer_compute_total_ms = []
-    for rank, data in files_data:
-        optimizer_time_ms += data.execution_time.optimizer_time_ms
-        layer_compute_total_ms += data.execution_time.layer_compute_total_ms
-
-    batch_generator_time_ms = files_data[0][1].execution_time.batch_generator_time_ms
-    batch_generator_time_ms += files_data[-1][1].execution_time.batch_generator_time_ms
-    batch_generator_time_ms /= 2
-
-    # sum layer_compute_total_ms for forward_backward_time_ms
-    forward_backward_time_ms = sum(layer_compute_total_ms)
-    total_time_ms = (
-        forward_backward_time_ms + batch_generator_time_ms + optimizer_time_ms
-    )
-
-    final_data_execution_time = ExecutionTime(
-        total_time_ms=total_time_ms,
-        forward_backward_time_ms=forward_backward_time_ms,
-        batch_generator_time_ms=batch_generator_time_ms,
-        layernorm_grads_all_reduce_time_ms=None,
-        embedding_grads_all_reduce_time_ms=None,
-        optimizer_time_ms=optimizer_time_ms,
-        layer_compute_total_ms=layer_compute_total_ms,
-    )
-
-    final_data = ModelMetrics(
-        model=final_data_model,
-        execution_time=final_data_execution_time,
-        execution_memory=final_data_execution_memory,
-    )
-
-    # save the json file
-    model_metrics_json = json.dumps(asdict(final_data), indent=2)
-
-    # save file to file_path/merged/"DeviceType.{device}_tp{tp}_bs{bs}".json
-    base_directory = Path(base_directory) / "merged"
-    # mkdir if not exists
-    base_directory.mkdir(parents=True, exist_ok=True)
-
-    file_path = Path(base_directory) / f"{model_name}_DeviceType.{device_name}_tp{tp}_bs{bs}.json"
-    with open(file_path.absolute(), "w") as f:
-        f.write(model_metrics_json)
-
+    output_file = output_dir / f"{model_name}_DeviceType.{device_name}_tp{tp}_bs{bs}.json"
+    with open(output_file.absolute(), "w") as f:
+        json.dump(asdict(final_data), f, indent=2)
+    print(f"Saved merged file: {output_file}")
 
 def parse_file_name(file_name):
     tmp = file_name.split("_DeviceType")
@@ -131,7 +142,7 @@ def parse_file_name(file_name):
         model_name = ''
         file_name = tmp[0]
     run_name_list = file_name.split(".")[1].split("_")
-    assert len(run_name_list) >= 3
+    assert len(run_name_list) >= 3, f"Invalid file name: {file_name}"
     device_name = run_name_list[0]
     tp = run_name_list[-2].replace("tp", "")
     bs = run_name_list[-1].replace("bs", "")
@@ -160,5 +171,5 @@ def merge_all_files(base_directory):
 
 
 if __name__ == "__main__":
-    base_directory = "./outputs/"
+    base_directory = "./output_2/"
     merge_all_files(base_directory)
