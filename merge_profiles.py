@@ -83,6 +83,13 @@ def merge_execution_data(files_data: List[ProfileData]) -> MergedMetrics:
         
     merged = MergedMetrics(model=files_data[0].metrics.model)
     
+    # correct layer_memory_total_mb for each rank using the total_memory_mb
+    
+    for profile in files_data:
+        layer = profile.metrics.execution_memory.layer_memory_total_mb
+        layer_sum = sum(layer)
+        profile.metrics.execution_memory.layer_memory_total_mb = [x * profile.metrics.execution_memory.total_memory_mb / layer_sum for x in layer]
+    
     for profile in files_data:
         # Memory metrics
         merged.total_memory_mb += profile.metrics.execution_memory.total_memory_mb
@@ -274,5 +281,5 @@ def merge_all_files(base_directory: str | Path) -> None:
 
 
 if __name__ == "__main__":
-    base_directory = "./output_2/"
+    base_directory = "./outputs/"
     merge_all_files(base_directory)
