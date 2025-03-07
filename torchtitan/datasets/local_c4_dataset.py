@@ -1,83 +1,59 @@
 import os
 import json
-from typing import Iterator, Dict, Any, Optional
-from torch.utils.data import IterableDataset
-from datasets import Dataset, load_dataset
+from typing import Optional, Iterator
+from pathlib import Path
+import torch
+from datasets import Dataset, IterableDataset
 from torchtitan.logging import logger
 
-class LocalC4Dataset(IterableDataset):
-    """Local C4 dataset that caches and streams data from disk"""
+def get_local_c4_dataset(
+    dataset_path: str,
+    split: str = "train",
+    streaming: bool = True,
+    cache_dir: Optional[str] = None
+) -> Union[Dataset, IterableDataset]:
+    """
+    Get C4 dataset with local caching capability.
     
-    def __init__(
-        self,
-        cache_dir: str = "~/.cache/torchtitan/datasets/c4",
-        num_shards: int = 10,
-        shard_size: int = 10000,
-    ):
-        self.cache_dir = os.path.expanduser(cache_dir)
-        self.num_shards = num_shards
-        self.shard_size = shard_size
-        self._current_shard = 0
-        self._ensure_cache()
-
-    def _ensure_cache(self) -> None:
-        """Ensures cache exists, downloads if needed"""
-        os.makedirs(self.cache_dir, exist_ok=True)
+    Args:
+        dataset_path: Original HF dataset path
+        split: Dataset split (train/validation/test)
+        streaming: Whether to use streaming mode
+        cache_dir: Directory to store cached data
         
-        # Check if we need to download
-        if not self._is_cache_complete():
-            logger.info("Cache incomplete, downloading C4 dataset...")
-            self._download_and_cache()
-        else:
-            logger.info("Using cached C4 dataset")
-
-    def _is_cache_complete(self) -> bool:
-        """Checks if all expected cache files exist"""
-        for i in range(self.num_shards):
-            if not os.path.exists(self._get_shard_path(i)):
-                return False
-        return True
-
-    def _get_shard_path(self, shard_idx: int) -> str:
-        return os.path.join(self.cache_dir, f"shard_{shard_idx:05d}.jsonl")
-
-    def _download_and_cache(self) -> None:
-        """Downloads C4 dataset and caches in shards"""
-        ds = load_dataset("allenai/c4", name="en", split="train", streaming=True)
-        
-        current_shard = []
-        shard_idx = 0
-        
-        for item in ds:
-            current_shard.append(item)
-            
-            if len(current_shard) >= self.shard_size:
-                self._save_shard(current_shard, shard_idx)
-                shard_idx += 1
-                current_shard = []
-                
-                if shard_idx >= self.num_shards:
-                    break
-        
-        # Save any remaining items
-        if current_shard:
-            self._save_shard(current_shard, shard_idx)
-
-    def _save_shard(self, items: list, shard_idx: int) -> None:
-        shard_path = self._get_shard_path(shard_idx)
-        with open(shard_path, 'w') as f:
-            for item in items:
-                f.write(json.dumps(item) + '\n')
-        logger.info(f"Saved shard {shard_idx} to {shard_path}")
-
-    def _load_shard(self, shard_idx: int) -> Iterator[Dict[str, Any]]:
-        shard_path = self._get_shard_path(shard_idx)
-        with open(shard_path, 'r') as f:
-            for line in f:
-                yield json.loads(line)
-
-    def __iter__(self) -> Iterator[Dict[str, Any]]:
-        while True:
-            for shard_idx in range(self.num_shards):
-                for item in self._load_shard(shard_idx):
-                    yield item 
+    Returns:
+        Dataset or IterableDataset: Same output type as HF's load_dataset
+    """
+    if cache_dir is None:
+        cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "torchtitan", "datasets", "c4")
+    
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_file = os.path.join(cache_dir, f"c4_{split}.jsonl")
+    
+    # If cache exists, load from it
+    if os.path.exists(cache_file):
+        logger.info(f"Loading C4 dataset from local cache: {cache_file}")
+        if streaming:
+            return IterableDataset.from_json(cache_file)
+        return Dataset.from_json(cache_file)
+    
+    # If no cache, download and cache
+    logger.info(f"Downloading C4 dataset and caching to: {cache_file}")
+    from datasets import load_dataset
+    
+    # Download original dataset
+    ds = load_dataset(dataset_path, name="en", split=split, streaming=True)
+    
+    # Cache the first chunk (useful for testing/development)
+    CACHE_SIZE = 100_000  # Adjust based on your needs
+    
+    with open(cache_file, 'w') as f:
+        for i, example in enumerate(ds):
+            if i >= CACHE_SIZE:
+                break
+            json.dump(example, f)
+            f.write('\n')
+    
+    if streaming:
+        return IterableDataset.from_json(cache_file)
+    return Dataset.from_json(cache_file)
