@@ -1,58 +1,19 @@
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import List, Dict, Optional, Tuple
 import json
 from dataclasses import asdict
 from pathlib import Path
 from .constants import ACTIVATION_SAFETY_FACTOR, TOTAL_SAFETY_FACTOR
 import torch
+from .types import ModelMemoryInfo, ModelMetrics, Parameters, Model, ExecutionTime, ExecutionMemory
 
 
-def save_metrics(
+def create_model_metrics(
     time_profile: dict,
     memory_profile: dict,
-    model_profile: dict,
-    file_path: str,
-    tp: int,
-    bs: int,
-    device: str,
-    actual_profiler_number_of_layers=None,
-    first_layer_index=None,
-    rank=None,
-) -> Dict:
-
-    @dataclass
-    class Parameters:
-        total_parameters_bytes: int
-        parameters_per_layer_bytes: List[int]
-        activation_parameters_bytes: List[int]
-
-    @dataclass
-    class Model:
-        model_name: str
-        num_layers: int
-        parameters: Parameters
-
-    @dataclass
-    class ExecutionTime:
-        total_time_ms: float
-        forward_backward_time_ms: float
-        batch_generator_time_ms: float
-        layernorm_grads_all_reduce_time_ms: float
-        embedding_grads_all_reduce_time_ms: float
-        optimizer_time_ms: float
-        layer_compute_total_ms: List[float]
-
-    @dataclass
-    class ExecutionMemory:
-        total_memory_mb: float
-        layer_memory_total_mb: List[float]
-
-    @dataclass
-    class ModelMetrics:
-        model: Model
-        execution_time: ExecutionTime
-        execution_memory: ExecutionMemory
-
+    model_profile: ModelMemoryInfo,
+) -> ModelMetrics:
+    """Create ModelMetrics instance from profile data."""
     model_metrics = ModelMetrics(
         model=Model(
             model_name=model_profile.model_name,
@@ -77,96 +38,192 @@ def save_metrics(
             layer_memory_total_mb=memory_profile["layer_memory_total_mb"],
         ),
     )
+    return model_metrics
 
-    def match_list_to_full_model(tmp, nls, pnl, fli):
-        tmp2 = []
-        for i in range(fli):
-            tmp2.append(tmp[i])
-        avg = sum(tmp[fli : fli + pnl]) / pnl
-        for _ in range(nls):
-            tmp2.append(avg)
-        for i in range(fli + pnl, len(tmp)):
-            tmp2.append(tmp[i])
+def match_partial_profiled_to_full_model(
+    original_metrics: list,
+    num_layers_total: int,
+    num_layers_profiled: int,
+    first_layer_idx: int
+) -> tuple[list, float]:
+    """Extrapolate profiled layer metrics to match the full model size.
 
-        return tmp2, avg
+    This function takes metrics from a partially profiled model and extends them
+    to match the full model size by:
+    1. Keeping the first few layers as is (up to first_layer_idx)
+    2. Computing average of profiled layers and repeating it for middle layers
+    3. Keeping the remaining layers as is
 
-    if actual_profiler_number_of_layers is not None:
+    Args:
+        original_metrics: Original list of metrics per layer
+        num_layers_total: Total number of layers in the full model
+        num_layers_profiled: Number of layers that were actually profiled
+        first_layer_idx: Index of the first layer to start averaging from
 
-        # model
-        actual_n_layers = actual_profiler_number_of_layers[0]
-        profiled_n_layers = actual_profiler_number_of_layers[1]
-        first_layer_index = first_layer_index
-
-        model_metrics.model.num_layers = actual_profiler_number_of_layers[0]
-        tmp = model_metrics.model.parameters.parameters_per_layer_bytes
-        # first_layer_index = 1, actual_n_layers=4 => tmp=[x1,x2,x3,x4] , tmp2=[x1,x2,x2,x2,x2,x3,x4]
-        tmp2, avg2 = match_list_to_full_model(
-            tmp, actual_n_layers, profiled_n_layers, first_layer_index
-        )
-        model_metrics.model.parameters.parameters_per_layer_bytes = tmp2
-
-        model_metrics.model.parameters.total_parameters_bytes = sum(tmp2)
-
-        tmp = model_metrics.model.parameters.activation_parameters_bytes
-        tmp2, avg2 = match_list_to_full_model(
-            tmp, actual_n_layers, profiled_n_layers, first_layer_index
-        )
-        model_metrics.model.parameters.activation_parameters_bytes = tmp2
-
-        # execution time
-
-        tmp = model_metrics.execution_time.layer_compute_total_ms
-        sum_prev_layer_compute = sum(tmp)
-        tmp2, avg_prev_layer_compute = match_list_to_full_model(
-            tmp, actual_n_layers, profiled_n_layers, first_layer_index
-        )
-        model_metrics.execution_time.layer_compute_total_ms = tmp2
-
-        model_metrics.execution_time.forward_backward_time_ms += (
-            avg_prev_layer_compute * (actual_n_layers - profiled_n_layers)
+    Returns:
+        tuple[list, float]: (
+            Extended metrics list matching full model size,
+            Average value used for extension
         )
 
-        prev_optimizer_time = model_metrics.execution_time.optimizer_time_ms
+    Example:
+        If original_metrics=[x1,x2,x3,x4], first_layer_idx=1, num_layers_total=4:
+        Returns: [x1,x2,x2,x2,x2,x3,x4], avg(x2)
+    """
+    extended_metrics = []
+    
+    # Copy initial layers unchanged
+    for i in range(first_layer_idx):
+        extended_metrics.append(original_metrics[i])
+    
+    # Calculate average of profiled layers
+    profiled_layers = original_metrics[first_layer_idx : first_layer_idx + num_layers_profiled]
+    avg_metric = sum(profiled_layers) / num_layers_profiled
+    
+    # Extend middle section with averaged value
+    for _ in range(num_layers_total):
+        extended_metrics.append(avg_metric)
+    
+    # Copy remaining layers unchanged
+    remaining_start = first_layer_idx + num_layers_profiled
+    extended_metrics.extend(original_metrics[remaining_start:])
+    
+    return extended_metrics, avg_metric
 
-        model_metrics.execution_time.optimizer_time_ms = (
-            prev_optimizer_time
-            + prev_optimizer_time
-            * (avg_prev_layer_compute / sum_prev_layer_compute)
-            * (actual_n_layers - profiled_n_layers)
-        )
+def update_partial_metrics_for_full_model(
+    metrics: ModelMetrics,
+    actual_layers: tuple[int, int],
+    first_layer_index: int
+) -> ModelMetrics:
+    """Update metrics to match full model size."""
 
-        model_metrics.execution_time.total_time_ms += (
-            model_metrics.execution_time.optimizer_time_ms
-            - prev_optimizer_time
-            + avg_prev_layer_compute * (actual_n_layers - profiled_n_layers)
-        )
-        # execution memory
+    actual_n_layers = actual_layers[0]
+    profiled_n_layers = actual_layers[1]
 
-        tmp = model_metrics.execution_memory.layer_memory_total_mb
-        tmp2, avg2 = match_list_to_full_model(
-            tmp, actual_n_layers, profiled_n_layers, first_layer_index
-        )
-        model_metrics.execution_memory.layer_memory_total_mb = tmp2
+    # update model parameters
+    metrics.model.num_layers = actual_layers[0]
+    tmp = metrics.model.parameters.parameters_per_layer_bytes
 
-        model_metrics.execution_memory.total_memory_mb += avg2 * (
-            actual_n_layers - profiled_n_layers
-        )
+    tmp2, avg2 = match_partial_profiled_to_full_model(
+        tmp, actual_n_layers, profiled_n_layers, first_layer_index
+    )
+    metrics.model.parameters.parameters_per_layer_bytes = tmp2
 
-    model_metrics_json = json.dumps(asdict(model_metrics), indent=2)
-    tmp_model_name = model_profile.model_name
-    # save file to file_path/"DeviceType.{device}_tp{tp}_bs{bs}".json
+    metrics.model.parameters.total_parameters_bytes = sum(tmp2)
+
+    tmp = metrics.model.parameters.activation_parameters_bytes
+    tmp2, avg2 = match_partial_profiled_to_full_model(
+        tmp, actual_n_layers, profiled_n_layers, first_layer_index
+    )
+    metrics.model.parameters.activation_parameters_bytes = tmp2
+
+    # update execution time
+    tmp = metrics.execution_time.layer_compute_total_ms
+    sum_prev_layer_compute = sum(tmp)
+    tmp2, avg_prev_layer_compute = match_partial_profiled_to_full_model(
+        tmp, actual_n_layers, profiled_n_layers, first_layer_index
+    )
+    metrics.execution_time.layer_compute_total_ms = tmp2
+
+    metrics.execution_time.forward_backward_time_ms += (
+        avg_prev_layer_compute * (actual_n_layers - profiled_n_layers)
+    )
+
+    prev_optimizer_time = metrics.execution_time.optimizer_time_ms
+
+    metrics.execution_time.optimizer_time_ms = (
+        prev_optimizer_time
+        + prev_optimizer_time
+        * (avg_prev_layer_compute / sum_prev_layer_compute)
+        * (actual_n_layers - profiled_n_layers)
+    )
+
+    metrics.execution_time.total_time_ms += (
+        metrics.execution_time.optimizer_time_ms
+        - prev_optimizer_time
+        + avg_prev_layer_compute * (actual_n_layers - profiled_n_layers)
+    )
+    
+    # update execution memory
+    tmp = metrics.execution_memory.layer_memory_total_mb
+    tmp2, avg2 = match_partial_profiled_to_full_model(
+        tmp, actual_n_layers, profiled_n_layers, first_layer_index
+    )
+    metrics.execution_memory.layer_memory_total_mb = tmp2
+
+    metrics.execution_memory.total_memory_mb += avg2 * (
+        actual_n_layers - profiled_n_layers
+    )
+    
+    return metrics
+
+
+def save_metrics_to_file(
+    metrics: ModelMetrics,
+    file_path: str,
+    device: str,
+    tp: int,
+    bs: int,
+    rank: Optional[int] = None
+) -> None:
+    """Save metrics to JSON file."""
+    model_metrics_json = json.dumps(asdict(metrics), indent=2)
+    model_name = metrics.model.model_name
+    # save file to file_path/DeviceType.{device}_{rank}_tp{tp}_bs{bs}.json
     if rank is not None:
         rank = f"_{rank}"
     else:
         rank = ""
     file_path = (
         Path(file_path)
-        / f"{tmp_model_name}_DeviceType.{device}{rank}_tp{tp}_bs{bs}.json"
+        / f"{model_name}_DeviceType.{device}{rank}_tp{tp}_bs{bs}.json"
     )
     with open(file_path.absolute(), "w") as f:
         f.write(model_metrics_json)
+    
+def save_metrics(
+    time_profile: dict,
+    memory_profile: dict,
+    model_profile: dict,
+    file_path: str,
+    tp: int,
+    bs: int,
+    device: str,
+    actual_profiler_number_of_layers: Optional[tuple[int, int]] = None,
+    first_layer_index: Optional[int] = None,
+    rank: Optional[int] = None,
+) -> str:
+    """Save model profiling metrics to JSON file.
+    
+    Args:
+        time_profile: Time profiling results
+        memory_profile: Memory profiling results
+        model_profile: Model architecture profile
+        file_path: Output directory path
+        tp: Tensor parallel degree
+        bs: Batch size
+        device: Device type
+        actual_profiler_number_of_layers: Tuple of (actual layers, profiled layers)
+        first_layer_index: Index of first layer
+        rank: Process rank for distributed training
+        
+    Returns:
+        JSON string of metrics
+    """    
+    metrics = create_model_metrics(time_profile, memory_profile, model_profile)
 
-    return model_metrics_json
+
+    if actual_profiler_number_of_layers is not None:
+        metrics = update_partial_metrics_for_full_model(
+            metrics,
+            actual_profiler_number_of_layers,
+            first_layer_index,
+        )
+
+
+    save_metrics_to_file(metrics, file_path, device, tp, bs, rank)
+
+    return json.dumps(asdict(metrics), indent=2)
 
 
 def get_dummy_input(config, model_config):
