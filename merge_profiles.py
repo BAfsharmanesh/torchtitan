@@ -3,6 +3,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Dict, List, Tuple
 from torchtitan.profilers.types import Parameters, Model, ExecutionTime, ExecutionMemory, ModelMetrics
+import re
 
 @dataclass
 class ProfileData:
@@ -193,35 +194,32 @@ def merge_files(json_files: List[Path]) -> None:
         json.dump(asdict(final_data), f, indent=2)
     print(f"Saved merged file: {output_file}")
 
-def parse_file_name(file_name: str) -> Tuple[List[str], str, str, str, str]:
-    """Parse profile filename to extract metadata.
+def parse_file_name(file_name: str) -> Tuple[str, str, str, str]:
+    """Parse profile filename to extract metadata using regex.
     
     Args:
-        file_name: Name of the profile file
+        file_name: Name of the profile file (format: [model_name_]DeviceType.[rank_]device_tp{N}_bs{N}.json)
         
     Returns:
         Tuple containing:
-            - List of run name components
             - Device name
             - Model name
             - TP (tensor parallel) size
             - Batch size
             
     Raises:
-        AssertionError: If filename format is invalid
+        ValueError: If filename format is invalid
     """
-    tmp = file_name.split("_DeviceType")
-    if len(tmp) > 1:
-        model_name, file_name = tmp
-    else:
-        model_name = ''
-        file_name = tmp[0]
-    run_name_list = file_name.split(".")[1].split("_")
-    assert len(run_name_list) >= 3, f"Invalid file name: {file_name}"
-    device_name = run_name_list[0]
-    tp = run_name_list[-2].replace("tp", "")
-    bs = run_name_list[-1].replace("bs", "")
-    return run_name_list, device_name, model_name, tp, bs
+    pattern = r"(?:(.+?)_)?DeviceType\.(?:\d+_)?(\w+)_tp(\d+)_bs(\d+)\.json"
+    match = re.match(pattern, file_name)
+    
+    if not match:
+        raise ValueError(f"Invalid file name format: {file_name}")
+        
+    model_name, device_name, tp, bs = match.groups()
+    model_name = model_name or ''  # Convert None to empty string if no model name
+    
+    return device_name, model_name, tp, bs
 
 
 def merge_all_files(base_directory: str | Path) -> None:
@@ -237,19 +235,26 @@ def merge_all_files(base_directory: str | Path) -> None:
         raise FileNotFoundError(f"Directory not found: {base_directory}")
         
     # all json files in the base_directory
-    json_files = list(Path(base_directory).rglob(f"*.json"))
+    json_files = list(Path(base_directory).rglob("*.json"))
 
     # group json files with the same devicename, tp, bs
     json_files_grouped = {}
     for file in json_files:
-
-        run_name_list, device_name, model_name, tp, bs = parse_file_name(file.name)
-
-        key = f"{model_name}_{device_name}_tp{tp}_bs{bs}"
-        if key not in json_files_grouped:
-            json_files_grouped[key] = []
-        if len(run_name_list) > 3 and model_name != '':
+        try:
+            device_name, model_name, tp, bs = parse_file_name(file.name)
+            
+            # Skip files without rank information (merged files)
+            if not re.search(r'DeviceType\.\d+_', file.name):
+                continue
+                
+            key = f"{model_name}_{device_name}_tp{tp}_bs{bs}"
+            if key not in json_files_grouped:
+                json_files_grouped[key] = []
             json_files_grouped[key].append(file)
+            
+        except ValueError:
+            # Skip files that don't match the expected pattern
+            continue
 
     for json_files_g in json_files_grouped.values():
         if json_files_g:
