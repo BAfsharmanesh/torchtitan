@@ -92,9 +92,11 @@ class HuggingFaceDataset(IterableDataset, Stateful):
         if dataset_name == "c4":
             # c4 is huge, and requires both streaming and language selection
             # (we default to en)
-            # ds = load_dataset(dataset_path, name="en", split="train", streaming=True)            
-            from .local_c4_dataset import get_local_c4_dataset
-            ds = get_local_c4_dataset(dataset_path, split="train", streaming=True)            
+            ds = load_dataset(dataset_path, name="en", split="train", streaming=True)  
+        elif dataset_name == "c4_test":
+            # load and cache the c4_test dataset in cwd/.cache/datasets/c4_test
+            ds = load_dataset(dataset_path, split="train", cache_dir="./.cache/datasets/c4_test")
+                     
         else:
             ds = load_dataset(dataset_path, split="train")
 

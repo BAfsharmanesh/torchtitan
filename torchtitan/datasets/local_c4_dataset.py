@@ -47,7 +47,7 @@ def get_local_c4_dataset(
     ds = load_dataset(dataset_path, name="en", split=split, streaming=True)
     
     # Cache the first chunk (useful for testing/development)
-    CACHE_SIZE = 100_000  # Adjust based on your needs
+    CACHE_SIZE = 10000  # Adjust based on your needs
     cached_ds = Dataset.from_dict({"text": [], "url": [], "timestamp": []})
     
     for i, example in enumerate(ds):
