@@ -184,7 +184,7 @@ def main(job_config: JobConfig):
                     0, model_config.num_classes, (job_config.training.batch_size,)
                 ),
             )
-            for _ in range(job_config.training.steps)
+            for _ in range(job_config.training.steps*10)
         ]
         data_loader = iter(data_list)
     elif job_config.model.name == "wideresnet":
@@ -201,7 +201,7 @@ def main(job_config: JobConfig):
                     0, model_config.num_classes, (job_config.training.batch_size,)
                 ),
             )
-            for _ in range(job_config.training.steps)
+            for _ in range(job_config.training.steps*10)
         ]
         data_loader = iter(data_list)
 

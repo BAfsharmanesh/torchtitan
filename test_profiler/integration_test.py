@@ -120,8 +120,9 @@ def get_command(
 
 
 class TestTrainingScript:
-    def __init__(self, runs):
+    def __init__(self, runs, cuda_visiable):
         self.runs = runs
+        self.cuda_visiable = cuda_visiable
 
         self.run_all(runs)
 
@@ -172,22 +173,21 @@ class TestTrainingScript:
         command[indx + 1] = str(pp_degree * run["tp_degree"])
 
         ## run the command
-        cuda_visiable = [1, 2, 6, 7, 4, 0]  # 3,5
-        cuda_visible_devices = ",".join(map(str, cuda_visiable))
+        cuda_visible_devices = ",".join(map(str, self.cuda_visiable))
         os.environ["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices
         subprocess.run(command)
 
 
 if __name__ == "__main__":
 
-
+    cuda_visiable = [3, 5, 1, 0, 7, 6, 2, 4] 
     run = {
-        "batch_size": 16,
+        "batch_size": 512,
         "tp_degree": 1,
-        "flavor": "271M",
-        "model": "llama2",
+        "flavor": "13B",
+        "model": "wideresnet",
     }
-    TestTrainingScript([run])
+    TestTrainingScript([run], cuda_visiable)
 
     # TestTrainingScript(wideresnet_runs)
     # TestTrainingScript(moe_runs)

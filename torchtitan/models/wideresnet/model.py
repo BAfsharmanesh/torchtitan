@@ -8,7 +8,7 @@ class ModelArgs:
     n_tot_layers: int = 50
     num_filters: int = 64
     width_factor: int = 2
-    num_classes: int = 1000
+    num_classes: int = 100
     input_channels: int = 3
     input_size: int = 32
 

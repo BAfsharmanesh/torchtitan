@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 from torchtitan.profilers.types import Parameters, Model, ExecutionTime, ExecutionMemory, ModelMetrics
 import re
+import shutil
+import os
 
 @dataclass
 class ProfileData:
@@ -83,13 +85,7 @@ def merge_execution_data(files_data: List[ProfileData]) -> MergedMetrics:
         
     merged = MergedMetrics(model=files_data[0].metrics.model)
     
-    # correct layer_memory_total_mb for each rank using the total_memory_mb
-    
-    for profile in files_data:
-        layer = profile.metrics.execution_memory.layer_memory_total_mb
-        layer_sum = sum(layer)
-        profile.metrics.execution_memory.layer_memory_total_mb = [x * profile.metrics.execution_memory.total_memory_mb / layer_sum for x in layer]
-    
+
     for profile in files_data:
         # Memory metrics
         merged.total_memory_mb += profile.metrics.execution_memory.total_memory_mb
@@ -99,6 +95,7 @@ def merge_execution_data(files_data: List[ProfileData]) -> MergedMetrics:
         merged.optimizer_time_ms += profile.metrics.execution_time.optimizer_time_ms
         merged.layer_compute_total_ms += profile.metrics.execution_time.layer_compute_total_ms
 
+
     # Average batch generator time between first and last rank
     first_time = files_data[0].metrics.execution_time.batch_generator_time_ms
     last_time = files_data[-1].metrics.execution_time.batch_generator_time_ms
@@ -106,7 +103,10 @@ def merge_execution_data(files_data: List[ProfileData]) -> MergedMetrics:
     
     return merged      
 
-
+def correct_memory(model_metrics: ModelMetrics) -> ModelMetrics:
+    # make memory consistent with the total_memory_mb
+    model_metrics.execution_memory.layer_memory_total_mb = [x * model_metrics.execution_memory.total_memory_mb / sum(model_metrics.execution_memory.layer_memory_total_mb) for x in model_metrics.execution_memory.layer_memory_total_mb]
+    return model_metrics    
 
 def create_final_metrics(merged: MergedMetrics) -> ModelMetrics:
     """Create final ModelMetrics from merged data.
@@ -203,15 +203,29 @@ def merge_files(json_files: List[Path]) -> None:
     # Merge and create final metrics
     merged = merge_execution_data(files_data)
     final_data = create_final_metrics(merged)
+    final_data = correct_memory(final_data)
 
     # Save merged results
+    output_file_name = f"{model_name}_DeviceType.{device_name}_tp{tp}_bs{bs}.json"
+    save_model_metrics(final_data, output_file_name, base_directory)
+    # output_dir = Path(base_directory) / "merged"
+    # output_dir.mkdir(parents=True, exist_ok=True)
+
+    # output_file = output_dir / f"{model_name}_DeviceType.{device_name}_tp{tp}_bs{bs}.json"
+    # with open(output_file.absolute(), "w") as f:
+    #     json.dump(asdict(final_data), f, indent=2)
+    # print(f"Saved merged file: {output_file}")
+
+
+def save_model_metrics(model_metrics: ModelMetrics, output_file_name: str | Path, base_directory: Path) -> None:
     output_dir = Path(base_directory) / "merged"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    output_file = output_dir / f"{model_name}_DeviceType.{device_name}_tp{tp}_bs{bs}.json"
+    output_file = output_dir / output_file_name
     with open(output_file.absolute(), "w") as f:
-        json.dump(asdict(final_data), f, indent=2)
-    print(f"Saved merged file: {output_file}")
+        json.dump(asdict(model_metrics), f, indent=2)
+    print(f"Saved the file: {output_file}")
+
 
 def parse_file_name(file_name: str) -> Tuple[str, str, str, str]:
     """Parse profile filename to extract metadata using regex.
@@ -252,20 +266,41 @@ def merge_all_files(base_directory: str | Path) -> None:
     """
     if not Path(base_directory).exists():
         raise FileNotFoundError(f"Directory not found: {base_directory}")
+    
+    # remove the existing merged directory
+    output_dir = Path(base_directory) / "merged"
+    if os.path.exists(output_dir):
+        shutil.rmtree(output_dir, ignore_errors=True)
+    output_dir.mkdir(parents=True)
         
     # all json files in the base_directory
     json_files = list(Path(base_directory).rglob("*.json"))
 
+
     # group json files with the same devicename, tp, bs
     json_files_grouped = {}
     for file in json_files:
-        try:
-            device_name, model_name, tp, bs = parse_file_name(file.name)
+        try:            
+            
+            # replace learning models have no rank information to the /merged directory
+            pattern = r"^(.+?)_DeviceType\.([A-Za-z0-9]+)_tp(\d+)_bs(\d+)\.json$"
+            if re.match(pattern, file.name):
+                output_file = output_dir / file.name
+                # replace if the file already exists   
+                json_data = read_json_file(file)
+                model_metrics = json_2_model(json_data)  
+                model_metrics = correct_memory(model_metrics)                         
+                save_model_metrics(model_metrics, file.name, base_directory)
+                # shutil.copy2(file, output_file)
+                # print(f"Copied file: {output_file}")
+                continue
             
             # Skip files without rank information
             if not re.search(r'_\d+_tp\d+_bs\d+\.json$', file.name):
                 continue
                 
+            device_name, model_name, tp, bs = parse_file_name(file.name)
+            
             key = f"{model_name}_{device_name}_tp{tp}_bs{bs}"
             if key not in json_files_grouped:
                 json_files_grouped[key] = []

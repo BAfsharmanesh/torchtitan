@@ -8,7 +8,6 @@ from .utils import (
     get_dummy_input,
     slice_layers_2_fit_gpu
 )
-from .constants import ACTIVATION_SAFETY_FACTOR, TOTAL_SAFETY_FACTOR
 
 # Compatibility aliases for backward compatibility
 

@@ -3,7 +3,7 @@ from typing import List, Dict, Optional, Tuple
 import json
 from dataclasses import asdict
 from pathlib import Path
-from .constants import ACTIVATION_SAFETY_FACTOR, TOTAL_SAFETY_FACTOR
+from .constants import ACTIVATION_SAFETY_FACTOR, WEIGHT_SAFETY_FACTOR, MEMORY_SAFTEY_FACTOR
 import torch
 from .types import ModelMemoryInfo, ModelMetrics, Parameters, Model, ExecutionTime, ExecutionMemory
 
@@ -209,7 +209,14 @@ def save_metrics(
         
     Returns:
         JSON string of metrics
-    """    
+    """        
+    # apply tp on the memory profile
+    memory_profile["total"]["total_memory"] *= tp
+    memory_profile["layer_memory_total_mb"] = [
+        memory * tp for memory in memory_profile["layer_memory_total_mb"]
+    ]
+    
+    # Create model metrics
     metrics = create_model_metrics(time_profile, memory_profile, model_profile)
 
 
@@ -261,6 +268,12 @@ def get_dummy_input(config, model_config):
     return dummy_input
 
 def slice_layers_2_fit_gpu(act_weight_profiled, gpu_memory, tp_degree):
+    
+    model_name = act_weight_profiled.model_name
+    model_name = "_".join(model_name.split('_')[:-1])
+            
+    gpu_memory = float(gpu_memory) / MEMORY_SAFTEY_FACTOR[model_name]
+    
     # print(f"GPU Memory: {gpu_memory}")
     parameters_per_layer_bytes = act_weight_profiled.parameters_per_layer_bytes
     activation_parameters_bytes = act_weight_profiled.activation_parameters_bytes
@@ -272,11 +285,10 @@ def slice_layers_2_fit_gpu(act_weight_profiled, gpu_memory, tp_degree):
 
     # predict memory usage for each layer
     def _memory_usage_precidtions(weight, act, model_name):
-        return TOTAL_SAFETY_FACTOR[model_name]*(ACTIVATION_SAFETY_FACTOR[model_name]*act + weight * 4)/tp_degree
+        return (ACTIVATION_SAFETY_FACTOR[model_name]*act + WEIGHT_SAFETY_FACTOR[model_name] * weight * 4)/tp_degree
 
 
-    model_name = act_weight_profiled.model_name
-    model_name = "_".join(model_name.split('_')[:-1])
+
     # calculate size of each layer
     layer_size_tmp = []
     for i in range(number_of_layers):
