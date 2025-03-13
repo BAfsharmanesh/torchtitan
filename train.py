@@ -15,7 +15,12 @@ from torch.profiler import record_function
 from torchtitan import utils
 from torchtitan.checkpoint import CheckpointManager, TrainState
 from torchtitan.config_manager import JobConfig
-from torchtitan.datasets import build_hf_data_loader, build_tokenizer
+from torchtitan.datasets import (
+    build_hf_data_loader,
+    build_tokenizer,
+    build_wr_data_loader,
+    build_moe_data_loader,
+)
 from torchtitan.float8 import Float8Handler
 from torchtitan.logging import init_logger, logger
 from torchtitan.metrics import build_gpu_memory_monitor, build_metric_logger
@@ -38,6 +43,7 @@ from torchtitan.profilers import (
     slice_layers_2_fit_gpu,
     get_dummy_input,
 )
+
 
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
 @record
@@ -75,29 +81,27 @@ def main(job_config: JobConfig):
 
     model_name = job_config.model.name
 
-
     # build model (using meta init)
     model_cls = model_name_to_cls[model_name]
     model_config = models_config[model_name][job_config.model.flavor]
-
 
     # config the model
     if job_config.model.name == "llama2":
         # build tokenizer
         tokenizer_type = model_name_to_tokenizer[model_name]
-        tokenizer = build_tokenizer(tokenizer_type, job_config.model.tokenizer_path)        
+        tokenizer = build_tokenizer(tokenizer_type, job_config.model.tokenizer_path)
         # set the model configs from training inputs:
         # 1. norm type to decide which norm layer to use
         # 2. vocab size from tokenizer
         # 3. max_seq_len base on inputs
         model_config.norm_type = job_config.model.norm_type
         model_config.vocab_size = tokenizer.n_words
-        model_config.max_seq_len = job_config.training.seq_len    
+        model_config.max_seq_len = job_config.training.seq_len
 
     logger.info(f"Building {model_name} {job_config.model.flavor} with {model_config}")
     with torch.device("meta"):
         model = model_cls.from_model_args(model_config)
-    
+
     # get activation size and weight size
     dummy_input = get_dummy_input(job_config, model_config)
     total_layers_name = get_layer_names(model)
@@ -110,7 +114,7 @@ def main(job_config: JobConfig):
     )
 
     print(f"{model_layer_profile=}")
-    
+
     activation_size_name = [
         (act_size, layer_name)
         for act_size, layer_name in zip(
@@ -125,20 +129,25 @@ def main(job_config: JobConfig):
             gpu_memory=gpu_memory_monitor.device_capacity,
             tp_degree=job_config.training.tensor_parallel_degree,
         )
-        
-        split_points = [total_layers_name[Slice_layers[0]] for Slice_idx, (Slice_layers, _) in enumerate(
-            zip(layers_slices, slices_mem_usage)) if Slice_idx != 0]
-        
+
+        split_points = [
+            total_layers_name[Slice_layers[0]]
+            for Slice_idx, (Slice_layers, _) in enumerate(
+                zip(layers_slices, slices_mem_usage)
+            )
+            if Slice_idx != 0
+        ]
+
         for Slice_idx, (Slice_layers, Slice_Memory_Usage) in enumerate(
             zip(layers_slices, slices_mem_usage)
         ):
-            print(f"{Slice_idx=}, {Slice_layers=}, {Slice_Memory_Usage=:.2f}GiB")  
+            print(f"{Slice_idx=}, {Slice_layers=}, {Slice_Memory_Usage=:.2f}GiB")
 
         return split_points
-    
+
     # build meshes
-    utils.init_distributed(job_config)    
-    
+    utils.init_distributed(job_config)
+
     parallel_dims = ParallelDims(
         dp_shard=job_config.training.data_parallel_shard_degree,
         dp_replicate=job_config.training.data_parallel_replicate_degree,
@@ -147,7 +156,7 @@ def main(job_config: JobConfig):
         pp=job_config.experimental.pipeline_parallel_degree,
         world_size=world_size,
         enable_loss_parallel=job_config.training.enable_loss_parallel,
-    )    
+    )
     world_mesh = parallel_dims.build_mesh(device_type="cuda")
     assert not parallel_dims.dp_enabled, "Data Parallel is not required for profiling"
     if parallel_dims.dp_enabled:
@@ -172,39 +181,17 @@ def main(job_config: JobConfig):
             dp_rank,
         )
     elif job_config.model.name == "moe":
-        batch_input_size = (
+        data_loader = build_moe_data_loader(
             job_config.training.batch_size,
             job_config.training.seq_len,
             model_config.dim,
+            model_config.num_classes,
         )
-        data_list = [
-            (
-                torch.randn(batch_input_size),
-                torch.randint(
-                    0, model_config.num_classes, (job_config.training.batch_size,)
-                ),
-            )
-            for _ in range(job_config.training.steps*10)
-        ]
-        data_loader = iter(data_list)
-    elif job_config.model.name == "wideresnet":
-        batch_input_size = (
-            job_config.training.batch_size,
-            model_config.input_channels,
-            model_config.input_size,
-            model_config.input_size,
-        )
-        data_list = [
-            (
-                torch.randn(batch_input_size),
-                torch.randint(
-                    0, model_config.num_classes, (job_config.training.batch_size,)
-                ),
-            )
-            for _ in range(job_config.training.steps*10)
-        ]
-        data_loader = iter(data_list)
 
+    elif job_config.model.name == "wideresnet":
+        data_loader = build_wr_data_loader(
+            job_config.training.batch_size, model_config.input_size
+        )
 
     # a no-op hander if float8 is not enabled
     float8_handler = Float8Handler(job_config, parallel_dims)
@@ -251,12 +238,11 @@ def main(job_config: JobConfig):
             return loss_fn
 
         loss_fn = get_loss_fn()
-    
+
     elif config.model.name == "wideresnet":
-        
+
         def loss_fn(pred, labels):
-            return torch.nn.functional.cross_entropy(pred, labels)    
-    
+            return torch.nn.functional.cross_entropy(pred, labels)
 
     if job_config.training.compile:
         loss_fn = torch.compile(loss_fn)
