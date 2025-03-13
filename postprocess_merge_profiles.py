@@ -64,9 +64,13 @@ def read_json_file(file_name: str | Path) -> Dict:
         FileNotFoundError: If file doesn't exist
         JSONDecodeError: If file contains invalid JSON
     """
-    with open(file_name, "r") as f:
-        data = json.load(f)
-    return data
+    try:
+        with open(file_name, "r") as f:
+            data = json.load(f)
+        return data
+    except Exception as e:
+        print(f"Error reading file: {file_name}")
+        raise e
 
 def merge_execution_data(files_data: List[ProfileData]) -> MergedMetrics:
     """Merge execution data from multiple profile files.

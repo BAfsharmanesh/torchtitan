@@ -182,10 +182,10 @@ if __name__ == "__main__":
 
     cuda_visiable = [3, 5, 1, 0, 7, 6, 2, 4] 
     run = {
-        "batch_size": 512,
-        "tp_degree": 1,
+        "batch_size": 2,
+        "tp_degree": 8,
         "flavor": "13B",
-        "model": "wideresnet",
+        "model": "llama2",
     }
     TestTrainingScript([run], cuda_visiable)
 
