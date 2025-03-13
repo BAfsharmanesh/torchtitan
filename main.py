@@ -3,6 +3,7 @@ import os
 from train import main, JobConfig
 from typing import List, Tuple, Dict
 import traceback
+from torchtitan.profilers import run_with_timeout
 
 def get_command(
     n_process: int,
@@ -99,7 +100,10 @@ def execute_a_train(batch_size: int, tp_degree: int, flavor: str, model: str, cu
     ## run the command
     cuda_visible_devices = ",".join(map(str, cuda_visiable))
     os.environ["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices
-    subprocess.run(command)
+    # subprocess.run(command)
+    # print(" ".join(command))
+    # print(command)
+    run_with_timeout(command, timeout_seconds=10*60)  # 10 minute timeout
 
 
 
@@ -168,7 +172,16 @@ def run_all(cuda_visiable):
                     print(f"-MAIN- Running {model}-{flavor}-bs{bs}-tp{tp} is Done! -MAIN-")
 
 def run_a_list(run_list, cuda_visiable):
+    """ execute a list of runs
+    run_list: list of tuples, each tuple is a run
     
+    example:
+    run_list = [
+        ('moe', '10B', 1, 1),
+        ('llama2', '13B', 1, 1),
+        ('wideresnet', '13B', 1, 1),
+    ]
+    """
     for run in run_list:
         model, flavor, bs, tp = run
         print("-"*150)
@@ -179,28 +192,10 @@ def run_a_list(run_list, cuda_visiable):
 if __name__ == "__main__":
     os.environ["OMP_NUM_THREADS"] = "1"
 
-    cuda_visiable = [3, 5, 1, 0, 7, 6, 2, 4] 
-    # run_all(cuda_visiable)
-    
-    run_list = [
-        ('moe', '380M', 512, 1),
-        ('moe', '1.3B', 256, 1),
-        # ('moe', '10B', 2, 1),
-        ('llama2', '271M', 64, 4),
-        ('llama2', '271M', 64, 8),
-        ('llama2', '1B', 32, 4),
-        ('llama2', '1B', 32, 8),
-        ('llama2', '7B', 8, 2),
-        ('llama2', '7B', 8, 4),
-        ('llama2', '7B', 8, 8),
-    ]
-
-    run_list = [
-        # ('moe', '380M', 4, 1),
-        # ('llama2', '271M', 4, 2),
-        ('wideresnet', '250M', 4, 1),
-    ]
-    run_a_list(run_list, cuda_visiable)
+    # cuda_visiable = [3, 5, 2, 6, 7, 0, 1, 4] 
+    cuda_visiable = [0, 1, 2, 3, 4, 5, 6, 7]
+    run_all(cuda_visiable)
+    # run_a_list(run_list, cuda_visiable)
     print("All Done!")
 
 

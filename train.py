@@ -48,6 +48,9 @@ from torchtitan.profilers import (
 # Enable debug tracing on failure: https://pytorch.org/docs/stable/elastic/errors.html
 @record
 def main(job_config: JobConfig):
+    time_dict = {}
+    time_dict["start"] = time.time()
+    
     init_logger()
     logger.info(
         f"Starting job: {job_config.job.description} bs:{job_config.training.batch_size} tp:{job_config.training.tensor_parallel_degree}"
@@ -371,6 +374,7 @@ def main(job_config: JobConfig):
     layer_time_profiler = TimeProfiler(layer_names=total_layers_name)
     layer_memory_profiler = MemoryProfiler(layer_names=total_layers_name)
 
+    time_dict["end_setup"] = time.time()
     with maybe_enable_profiling(
         job_config, global_step=train_state.step
     ) as torch_profiler, maybe_enable_memory_snapshot(
@@ -644,6 +648,11 @@ def main(job_config: JobConfig):
     )
 
     # logger.info(f"Metis information: {metis_input}")
+    time_dict["end"] = time.time()
+    
+    # prit setup time and training time
+    print(f'setup time: {time_dict["end_setup"] - time_dict["start"]}')
+    print(f'training time: {time_dict["end"] - time_dict["end_setup"]}')
 
 
 if __name__ == "__main__":

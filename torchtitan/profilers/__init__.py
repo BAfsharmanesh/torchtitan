@@ -8,6 +8,7 @@ from .utils import (
     get_dummy_input,
     slice_layers_2_fit_gpu
 )
+from .timeout import run_with_timeout
 
 # Compatibility aliases for backward compatibility
 
@@ -37,5 +38,8 @@ __all__ = [
     'SavedActivationContext',
     'measure_activation_shape',
     'get_layer_names',
-    'get_param_act_info'
+    'get_param_act_info',
+    
+    # Timeout function
+    'run_with_timeout',
 ] 
