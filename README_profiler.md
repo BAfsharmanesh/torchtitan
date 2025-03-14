@@ -1,5 +1,11 @@
 
 
+# run all model profiling and save logs
+
+python -u ./main.py > output.log 2>&1 &
+
+
+
 # unit test
 
 Run unittest
