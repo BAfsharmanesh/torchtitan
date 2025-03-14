@@ -4,7 +4,7 @@ outputs_0/
 
 log.txt
 
-train_configs/*
+# train_configs/*
 # torchtitan/models
 __pycache__
 .idea
