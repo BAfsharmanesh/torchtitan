@@ -2,9 +2,9 @@
 
 # run all model profiling and save logs
 
-python -u ./main.py > ./outputs/output2.log 2>&1 &
+replace the my_instance_id in the aws_terminate.py with your id.
 
-
+python -u ./main.py > ./outputs/output2.log 2>&1 &; python aws_terminate.py
 
 # unit test
 
