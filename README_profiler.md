@@ -2,7 +2,7 @@
 
 # run all model profiling and save logs
 
-python -u ./main.py > output.log 2>&1 &
+python -u ./main.py > ./outputs/output2.log 2>&1 &
 
 
 
