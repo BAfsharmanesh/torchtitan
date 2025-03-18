@@ -2,7 +2,7 @@
 
 # run all model profiling and save logs
 
-replace the my_instance_id in the aws_terminate.py with your id.
+replace the my_instance_id, and region_name in the aws_terminate.py with your ones.
 
 python -u ./main.py > ./outputs/output.log 2>&1 ; python aws_terminate.py
 
