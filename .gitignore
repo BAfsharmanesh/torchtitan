@@ -2,6 +2,7 @@ output_2/
 outputs_0/
 .cache/
 
+nohup.out
 log.txt
 
 # train_configs/*

@@ -2,7 +2,7 @@ import boto3
 
 def terminate_ec2_instance(instance_id):
     # Create an EC2 resource
-    ec2 = boto3.resource('ec2')
+    ec2 = boto3.resource('ec2', region_name='us-east-1')
 
     # Retrieve the instance to be terminated
     instance = ec2.Instance(instance_id)
