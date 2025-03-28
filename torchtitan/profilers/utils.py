@@ -157,30 +157,44 @@ def update_partial_metrics_for_full_model(
     
     return metrics
 
-
-def save_metrics_to_file(
-    metrics: ModelMetrics,
+def profiled_file_name(
+    model_name: str,
     file_path: str,
     device: str,
     tp: int,
     bs: int,
-    rank: Optional[int] = None
+    pp_rank: Optional[int] = None,
+    check_existed: bool = False,
+) -> str:
+    """Generate a file name based on the input parameters."""
+    if pp_rank is not None:
+        pp_rank = f"_{pp_rank}"
+    else:
+        pp_rank = ""
+    profiled_file_path = (
+        Path(file_path)
+        / f"{model_name}_DeviceType.{device}{pp_rank}_tp{tp}_bs{bs}.json"
+    )
+    
+    if check_existed:
+        if profiled_file_path.exists():
+            print(f"File {profiled_file_path} already exists.")
+            return True
+        else:
+            print(f"File {profiled_file_path} does not exist.")
+            return False
+            
+    return profiled_file_path.absolute()
+
+def save_metrics_to_file(
+    metrics: ModelMetrics,
+    profiled_file_path: str,
 ) -> None:
     """Save metrics to JSON file."""
     model_metrics_json = json.dumps(asdict(metrics), indent=2)
-    model_name = metrics.model.model_name
-    # save file to file_path/DeviceType.{device}_{rank}_tp{tp}_bs{bs}.json
-    if rank is not None:
-        rank = f"_{rank}"
-    else:
-        rank = ""
-    file_path = (
-        Path(file_path)
-        / f"{model_name}_DeviceType.{device}{rank}_tp{tp}_bs{bs}.json"
-    )
-    with open(file_path.absolute(), "w") as f:
+    with open(profiled_file_path, "w") as f:
         f.write(model_metrics_json)
-    
+
 def save_metrics(
     time_profile: dict,
     memory_profile: dict,
@@ -191,7 +205,7 @@ def save_metrics(
     device: str,
     actual_profiler_number_of_layers: Optional[tuple[int, int]] = None,
     first_layer_index: Optional[int] = None,
-    rank: Optional[int] = None,
+    pp_rank: Optional[int] = None,
 ) -> str:
     """Save model profiling metrics to JSON file.
     
@@ -205,7 +219,7 @@ def save_metrics(
         device: Device type
         actual_profiler_number_of_layers: Tuple of (actual layers, profiled layers)
         first_layer_index: Index of first layer
-        rank: Process rank for distributed training
+        pp_rank: PP Process rank for distributed training
         
     Returns:
         JSON string of metrics
@@ -227,8 +241,20 @@ def save_metrics(
             first_layer_index,
         )
 
-
-    save_metrics_to_file(metrics, file_path, device, tp, bs, rank)
+    profiled_file_path = profiled_file_name(
+        model_name=metrics.model.model_name,
+        file_path=file_path,
+        device=device,
+        tp=tp,
+        bs=bs,
+        pp_rank=pp_rank,
+    )
+    
+    # Save metrics to file
+    save_metrics_to_file(
+        metrics,
+        profiled_file_path,
+        )
 
     return json.dumps(asdict(metrics), indent=2)
 

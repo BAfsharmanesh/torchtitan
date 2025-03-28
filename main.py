@@ -3,7 +3,9 @@ import os
 from train import main, JobConfig
 from typing import List, Tuple, Dict
 import traceback
-from torchtitan.profilers import run_with_timeout
+from torchtitan.profilers import run_with_timeout, profiled_file_name
+import torch
+
 
 def get_command(
     n_process: int,
@@ -100,9 +102,38 @@ def execute_a_train(batch_size: int, tp_degree: int, flavor: str, model: str, cu
     ## run the command
     cuda_visible_devices = ",".join(map(str, cuda_visiable))
     os.environ["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices
-    # subprocess.run(command)
-    # print(" ".join(command))
-    # print(command)
+
+    
+    # # if we have split_points and related files exist, we can skip profiling
+    
+    # get device name
+    if torch.cuda.is_available():
+        device_name = torch.cuda.get_device_name(0)
+        # pick the last part of name if it has spaces: "a b c" -> "c"
+        device_name = device_name.split(" ")[-1]
+    else:
+        raise ValueError("CUDA is not available")
+    
+    all_files_existed = True
+    for pp in range(pp_degree):
+        file_status = profiled_file_name(
+            model_name=model + "_" + flavor,
+            file_path=config.job.dump_folder,
+            device=device_name,
+            tp=tp_degree,
+            bs=batch_size,
+            pp_rank=pp if pp_degree!=1 else None,
+            check_existed=True,          
+        )
+        if file_status == False:
+            all_files_existed = False
+            print(f"File tp={tp_degree},bs={batch_size},pp_rank={pp} does not exist, need to run profiling")
+            break
+    if all_files_existed:
+        print(f"All files tp={tp_degree},bs={batch_size}, pp_ranks={list(range(pp_degree))} already exist, skip profiling")
+        return
+    
+    
     run_with_timeout(command, timeout_seconds=10*60)  # 10 minute timeout
 
 
@@ -192,10 +223,27 @@ def run_a_list(run_list, cuda_visiable):
 if __name__ == "__main__":
     os.environ["OMP_NUM_THREADS"] = "1"
 
-    # cuda_visiable = [3, 5, 2, 6, 7, 0, 1, 4] 
-    cuda_visiable = [0, 1, 2, 3, 4, 5, 6, 7]
-    run_all(cuda_visiable)
-    # run_a_list(run_list, cuda_visiable)
+
+    # get each gpu available memory, then sort gpu ids based on available memory
+    num_gpus = torch.cuda.device_count()
+    print(f"Number of GPUs: {num_gpus}")    
+    gpu_memory = []
+    for i in range(num_gpus):
+        gpu_memory.append((i, torch.cuda.mem_get_info(i)[0] / 1024 / 1024))
+    sorted_gpu_ids = sorted(gpu_memory, key=lambda x: x[1], reverse=True)
+    sorted_gpu_ids = [x[0] for x in sorted_gpu_ids]
+    if len(sorted_gpu_ids) > num_gpus:
+        raise ValueError(f"cuda_visiable {sorted_gpu_ids} is larger than number of GPUs {num_gpus}")
+    
+    # run_list = [
+    #     ('moe', '380M', 8, 1),
+    #     ('moe', '1.3B', 8, 1),
+    #     ('moe', '2.4B', 32, 1),
+    # ]    
+    # run_a_list(run_list, sorted_gpu_ids)
+    
+    run_all(sorted_gpu_ids)
+    
     print("All Done!")
 
 

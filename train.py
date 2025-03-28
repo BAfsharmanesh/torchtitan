@@ -83,6 +83,14 @@ def main(job_config: JobConfig):
     logger.info(f"Peak FLOPS used for computing MFU: {gpu_peak_flops:.3e}")
 
     model_name = job_config.model.name
+    model_full_name = model_name + "_" + job_config.model.flavor
+
+    # profiling root path
+    if not os.path.exists(job_config.job.dump_folder):
+        raise FileNotFoundError(
+            f"Path {job_config.job.dump_folder} does not exist. Please create it first."
+        )
+    
 
     # build model (using meta init)
     model_cls = model_name_to_cls[model_name]
@@ -110,7 +118,7 @@ def main(job_config: JobConfig):
     total_layers_name = get_layer_names(model)
     print(f"{total_layers_name=}")
     model_layer_profile = get_param_act_info(
-        model_name + "_" + job_config.model.flavor,
+        model_full_name,
         model,
         total_layers_name,
         dummy_input=dummy_input,
@@ -631,20 +639,20 @@ def main(job_config: JobConfig):
         number_of_layers = model_config.n_layers
 
     metis_input = save_metrics(
-        layer_time_profiler.get_average_metrics(
+        time_profile = layer_time_profiler.get_average_metrics(
             warm=3, active=7, layers_name=total_layers_name
         ),
-        layer_memory_profiler.get_average_metrics(
+        memory_profile = layer_memory_profiler.get_average_metrics(
             warm=3, active=7, layers_name=total_layers_name
         ),
-        model_layer_profile,
-        "./outputs",
-        job_config.training.tensor_parallel_degree,
-        job_config.training.batch_size,
-        "A6000",
+        model_profile = model_layer_profile,
+        file_path = job_config.job.dump_folder,
+        tp = job_config.training.tensor_parallel_degree,
+        bs = job_config.training.batch_size,
+        device = gpu_memory_monitor.device_name.split(" ")[-1],
         actual_profiler_number_of_layers=None,  # (number_of_layers, 4),
         first_layer_index=1,
-        rank=pp_mesh.get_local_rank() if parallel_dims.pp_enabled else None,
+        pp_rank=pp_mesh.get_local_rank() if parallel_dims.pp_enabled else None,
     )
 
     # logger.info(f"Metis information: {metis_input}")

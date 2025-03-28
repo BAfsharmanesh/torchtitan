@@ -5,6 +5,7 @@ from .activation_profiler import SavedActivationContext, measure_activation_shap
 from .model_utils import get_layer_names, get_param_act_info
 from .utils import (
     save_metrics,
+    profiled_file_name,
     get_dummy_input,
     slice_layers_2_fit_gpu
 )
@@ -23,6 +24,7 @@ __all__ = [
     
     # Utility functions
     'save_metrics',
+    'profiled_file_name',
     'get_dummy_input',
     'register_timing_hooks',
     
